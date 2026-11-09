@@ -8,7 +8,7 @@ The scanner uses html5-qrcode and jsQR. Employee details appear in a popup; succ
 
 ## Run locally
 
-Use Python 3.12 or newer. These commands are for PowerShell from the repository root:
+Use Python 3.12 or newer on 64-bit Windows, Linux, or Apple silicon macOS. These commands are for PowerShell from the repository root:
 
 ```powershell
 py -m venv .venv
