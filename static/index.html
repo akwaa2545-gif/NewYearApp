@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f7f7f6">
+  <meta name="description" content="Employee check-in.">
+  <title>EventDesk | Staff</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script defer src="/static/vendor/html5-qrcode.min.js"></script>
+  <script defer src="/static/camera-controls.js"></script>
+  <script defer src="/static/qr-detail-scanner.js"></script>
+  <script defer src="/static/wristband-support.js"></script>
+  <script defer src="/static/employee-portrait.js"></script>
+  <script defer src="/static/app.js"></script>
+</head>
+<body data-view="home">
+  <div id="loginView" class="login-shell" hidden="">
+    <section class="login-copy">
+      <a class="brand brand-light brand-company" href="#" aria-label="EventDesk home"><img src="/static/assets/tokin-logo.png" alt="YAGEO Tokin"><span class="brand-product">EventDesk</span></a>
+      <div><h1>Welcome to<br>EventDesk.</h1></div>
+      
+    </section>
+    <section class="login-panel">
+      <form id="loginForm" class="login-card">
+        <div class="mobile-brand brand brand-company"><img src="/static/assets/tokin-logo.png" alt="YAGEO Tokin"><span class="brand-product">EventDesk</span></div><div class="login-mark">ED</div>
+        <h2>Admin sign in</h2>
+        <label for="loginPassword">Password</label>
+        <div class="password-field"><input id="loginPassword" type="password" autocomplete="current-password" required="" autofocus=""><button id="togglePassword" type="button">Show</button></div>
+        <p id="loginError" class="form-message error" role="alert"></p>
+        <button id="loginButton" class="button primary wide" type="submit">Sign in</button>
+        <button id="loginCancel" class="button secondary wide" type="button">Home</button>
+        
+      </form>
+    </section>
+  </div>
+
+  <div id="appView" class="app-shell">
+    <header class="app-header">
+      <button class="brand brand-button brand-company" type="button" data-view="home" aria-label="EventDesk home"><img src="/static/assets/tokin-logo.png" alt="YAGEO Tokin"><span class="brand-product">EventDesk</span></button>
+      <div class="header-center"><span class="live-dot"></span><span id="eventName">EventDesk</span></div>
+      <div class="header-actions"><span id="networkState" class="network">Online</span><span id="staffName" class="staff-name">Event Staff</span><button id="adminLoginButton" class="icon-button" type="button" hidden="">Admin</button><button id="headerBackButton" class="icon-button" type="button" data-view="home">Home</button><button id="logoutButton" class="icon-button" type="button" title="Leave admin" aria-label="Leave admin" hidden="">Leave admin</button></div>
+    </header>
+    <main>
+      <section id="view-home" class="view active">
+        <div class="home-hero"><div class="event-summary"><strong id="totalCount" aria-label="Employee count">—</strong></div></div>
+        <div class="task-grid">
+          <div class="checkin-task-group" data-roles="admin staff checkin_staff"><button class="task-card checkin" type="button" data-view="checkin"><strong>Scan</strong></button><button class="attendance-link" type="button" data-view="attendance">Check-in history</button></div>
+          <button class="task-card verify" type="button" data-view="verify" data-roles="verification_staff" hidden=""><strong>Check ID</strong></button>
+          <button class="task-card wristband" type="button" data-view="wristband" data-roles="admin staff checkin_staff"><strong>Lost wristband</strong></button>
+          <button class="task-card draw" type="button" data-view="draw" data-roles="admin staff lucky_draw_operator"><strong>Lucky wheel</strong></button>
+          <button class="task-card admin" type="button" data-view="admin" data-roles="admin" hidden=""><span class="task-number">04</span><span class="task-icon">⚙</span><strong>Admin</strong></button>
+        </div>
+        <div class="status-strip"><div><span>Checked in</span><strong id="checkedCount">—</strong></div><div><span>Can win</span><strong id="eligibleCount">—</strong></div><div><span>Winners</span><strong id="winnerCount">—</strong></div></div>
+        
+      </section>
+
+      <section id="view-attendance" class="view attendance-view">
+        <div class="view-heading"><button class="back-button" type="button" data-view="home">Home</button><div><h1>Check-in history</h1></div></div>
+        <form id="attendanceFilters" class="attendance-filters panel"><label>Employee ID<input id="attendanceSearch" type="search" inputmode="text" autocomplete="off" placeholder="Find employee ID"></label><label>Show<select id="attendanceStatus"><option value="all">All employees</option><option value="checked">Checked in</option><option value="pending">Not checked in</option><option value="lost">Lost wristband</option><option value="unreadable">QR cannot scan</option></select></label><button class="button dark" type="submit">Find</button></form>
+        <p id="attendanceSummary" class="attendance-summary" role="status">Loading...</p>
+        <div class="attendance-table-wrap panel"><table class="attendance-table"><thead><tr><th>Employee ID</th><th>Name</th><th>Department</th><th>Check-in</th><th>Wristband</th><th>Recorded by</th></tr></thead><tbody id="attendanceRows"></tbody></table></div>
+        <div class="attendance-pager"><button id="attendancePrevious" class="button secondary" type="button">Previous</button><span id="attendancePage"></span><button id="attendanceNext" class="button secondary" type="button">Next</button></div>
+      </section>
+
+      <section id="view-admin" class="view admin-view">
+        <div class="view-heading admin-heading"><div><h1>Admin</h1></div></div>
+        <p id="adminStatus" class="admin-status" role="status" aria-live="polite">Loading...</p>
+        <div class="admin-stats"><div><span>Employees</span><strong id="adminTotal">—</strong></div><div><span>Checked in</span><strong id="adminChecked">—</strong></div><div><span>Active logins</span><strong id="adminActive">—</strong></div><div><span>Event server</span><strong id="adminHealth">Checking</strong></div></div>
+        <div class="admin-grid">
+          <button class="admin-menu-button" type="button" data-admin-dialog="adminEmployeeDialog" aria-haspopup="dialog" aria-controls="adminEmployeeDialog">Add employee</button>
+          <button class="admin-menu-button" type="button" data-admin-dialog="adminActivityDialog" aria-haspopup="dialog" aria-controls="adminActivityDialog">Recent logins</button>
+          <button class="admin-menu-button admin-menu-danger" type="button" data-admin-dialog="adminAttendanceDialog" aria-haspopup="dialog" aria-controls="adminAttendanceDialog">Remove check-ins</button>
+          <button class="admin-menu-button admin-menu-danger" type="button" data-admin-dialog="adminDrawDialog" aria-haspopup="dialog" aria-controls="adminDrawDialog">Clear winners</button>
+        </div>
+        <div id="adminDialogScrim" class="admin-dialog-scrim" hidden></div>
+        <dialog id="adminEmployeeDialog" class="admin-dialog" role="dialog" aria-modal="true" aria-labelledby="adminEmployeeDialogTitle">
+          <div class="admin-dialog-header"><h2 id="adminEmployeeDialogTitle">Add employee</h2><button class="admin-dialog-close" type="button" data-admin-close aria-label="Close">&times;</button></div>
+          <form id="adminAddEmployeeForm" class="admin-form">
+            <label>Employee ID<input id="adminAddEmployeeId" inputmode="text" autocomplete="off" maxlength="50" required></label>
+            <label>Name<input id="adminAddEmployeeName" autocomplete="off" maxlength="200" required></label>
+            <label>Department<input id="adminAddEmployeeDepartment" autocomplete="off" maxlength="200"></label>
+            <label>Position<input id="adminAddEmployeePosition" autocomplete="off" maxlength="200" required></label>
+            <label>Lucky wheel<select id="adminAddEmployeeDraw"><option value="yes">Can win</option><option value="no">Cannot win</option></select></label>
+            <button id="adminAddEmployeeSubmit" class="button primary" type="submit">Add employee</button>
+          </form>
+          <p id="adminAddEmployeeMessage" class="form-message" role="status" aria-live="polite"></p>
+        </dialog>
+        <dialog id="adminActivityDialog" class="admin-dialog" role="dialog" aria-modal="true" aria-labelledby="adminActivityDialogTitle">
+          <div class="admin-dialog-header"><h2 id="adminActivityDialogTitle" tabindex="-1">Recent logins</h2><button class="admin-dialog-close" type="button" data-admin-close aria-label="Close">&times;</button></div>
+          <div id="adminActivity" aria-live="polite">Loading...</div>
+        </dialog>
+        <dialog id="adminAttendanceDialog" class="admin-dialog" role="dialog" aria-modal="true" aria-labelledby="adminAttendanceDialogTitle">
+          <div class="admin-dialog-header"><h2 id="adminAttendanceDialogTitle">Remove check-ins</h2><button class="admin-dialog-close" type="button" data-admin-close aria-label="Close">&times;</button></div>
+          <form id="adminAttendanceForm" class="admin-form">
+            <label>Remove<select id="adminAttendanceScope"><option value="one">One employee</option><option value="all">All check-ins</option></select></label>
+            <label id="adminEmployeeLabel">Employee ID<input id="adminEmployeeId" autocomplete="off" required></label>
+            <label>Reason<input id="adminAttendanceReason" maxlength="500" required></label>
+            <button id="adminAttendanceSubmit" class="button danger" type="submit">Remove check-in</button>
+          </form>
+          <p id="adminAttendanceMessage" class="form-message" role="status"></p>
+        </dialog>
+        <dialog id="adminDrawDialog" class="admin-dialog" role="dialog" aria-modal="true" aria-labelledby="adminDrawDialogTitle">
+          <div class="admin-dialog-header"><h2 id="adminDrawDialogTitle">Clear winners</h2><button class="admin-dialog-close" type="button" data-admin-close aria-label="Close">&times;</button></div>
+          <p class="admin-dialog-count"><strong id="adminDrawCount">&mdash;</strong> winners</p>
+          <form id="adminDrawForm" class="admin-form">
+            <label>Reason<input id="adminDrawReason" maxlength="500" required></label>
+            <label>Type RESET DRAW to confirm<input id="adminDrawConfirm" autocomplete="off" required></label>
+            <button id="adminDrawSubmit" class="button danger" type="submit">Clear winners</button>
+          </form>
+          <p id="adminDrawMessage" class="form-message" role="status"></p>
+        </dialog>
+      </section>
+
+      <section id="view-checkin" class="view operation-view" aria-label="Check-in scanner">
+        <div id="checkinWorkspace" class="operation-grid"></div>
+      </section>
+
+      <section id="view-wristband" class="view operation-view wristband-view" aria-labelledby="wristbandTitle">
+        <div class="view-heading"><button class="back-button" type="button" data-view="home">Home</button><div><h1 id="wristbandTitle">Lost wristband</h1></div></div>
+        <form id="wristbandLookupForm" class="panel wristband-lookup"><label for="wristbandEmployeeId">Employee ID<input id="wristbandEmployeeId" autocomplete="off" inputmode="numeric" maxlength="50" placeholder="Enter employee ID" required></label><button id="wristbandFind" class="button dark" type="submit">Find</button></form>
+        <p id="wristbandMessage" class="form-message wristband-message" role="status" aria-live="polite"></p>
+        <section id="wristbandResult" class="panel wristband-result" aria-labelledby="wristbandEmployeeName" hidden>
+          <h2 id="wristbandEmployeeName">Employee</h2><p id="wristbandEmployeeMeta" class="wristband-employee-meta"></p><p id="wristbandStatus" class="wristband-status"></p>
+          
+          <button id="wristbandLost" class="button danger" type="button" hidden>Mark wristband lost</button>
+        </section>
+      </section>
+
+      <section id="view-verify" class="view operation-view">
+        <div class="view-heading"><button class="back-button" type="button" data-view="home">Home</button><div><h1>Check ID</h1></div></div>
+        <div id="verifyWorkspace" class="operation-grid"></div>
+      </section>
+
+      <section id="view-draw" class="view draw-view">
+        <div class="view-heading"><button class="back-button" type="button" data-view="home">Home</button><div><h1>Lucky wheel</h1><p><span id="drawEligibleSummary">—</span> can win · <span id="drawParticipantCount">—</span> employees</p></div><span class="mode-badge amber"><span id="drawEligible">—</span> can win</span></div>
+        <div class="projector-toolbar panel"><div><h2><span id="projectorLiveDot" class="projector-live-dot"></span><span id="projectorPhase">Connecting</span></h2><p id="projectorDetail"></p></div><div class="projector-toolbar-actions"><button id="readyNextDraw" class="button secondary" type="button" hidden="">Next draw</button><button id="openProjector" class="button dark" type="button">Open draw screen</button></div></div>
+        <section class="panel reward-editor" aria-labelledby="rewardTitle">
+          <div class="reward-list-heading"><h2 id="rewardTitle">Rewards</h2><span id="rewardCount"></span></div>
+          <div id="rewardPublishedList"></div>
+          <details id="rewardSetup" class="reward-setup"><summary>Rewards <span id="rewardSetupSummary"></span></summary><div class="reward-setup-body">
+          <form id="rewardForm" class="reward-form">
+            <input id="rewardDraftId" type="hidden"><input id="rewardSourceId" type="hidden">
+            <label>Reward name<input id="rewardName" maxlength="100" placeholder="Reward name" required=""></label>
+            <label>Quantity<input id="rewardQuantity" type="number" min="1" max="5000" value="1" required=""></label>
+            <label>Picture (optional)<input id="rewardImage" type="file" accept="image/png,image/jpeg,image/webp"></label>
+            <label class="reward-remove-image"><input id="rewardRemoveImage" type="checkbox"> Remove current picture</label>
+            <div><button class="button dark" id="rewardAdd" type="submit">Add to list</button> <button class="button secondary" id="rewardCancel" type="button" hidden="">Cancel</button></div>
+          </form>
+          <p id="rewardMessage" class="form-message" role="status"></p>
+          <div id="rewardDraftList"></div>
+          <button class="button primary" id="rewardPublish" type="button">Show rewards</button>
+          </div></details>
+        </section>
+        <div class="draw-grid" hidden="">
+          <div class="wheel-stage"><div class="temple-bunting" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><div class="temple-roofline" aria-hidden="true"></div><div class="wheel-pointer"></div><div id="luckyWheel" class="wheel"><div class="wheel-core"><span aria-hidden="true">โชคดี</span><strong>ลุ้นโชค<br>งานวัด</strong></div></div><div id="winnerReveal" class="winner-reveal" hidden=""><p>ยินดีด้วย · Congratulations</p><h2 id="winnerName"></h2><span id="winnerMeta"></span><strong id="winnerPrize"></strong></div></div>
+          <div class="panel draw-controls"><form id="drawForm"><h2>Ready to draw</h2><label for="prizeSelect">Choose reward</label><select id="prizeSelect" required=""><option value="">Select a reward</option></select><button id="spinButton" class="button primary wide" type="submit">Draw</button><p id="drawMessage" class="form-message" role="status"></p><details class="draw-options"><summary>Options</summary><label for="roundInput">Round <span>optional</span></label><input id="roundInput" maxlength="100" placeholder="Round name"><label for="prizeImageInput">Prize picture <span>optional</span></label><div class="prize-image-picker"><input id="prizeImageInput" type="file" accept="image/png,image/jpeg,image/webp"><div id="prizeImagePreview" class="prize-image-preview" hidden=""><img id="prizeImagePreviewImg" alt="Selected prize"><div><strong id="prizeImageName">Prize picture</strong><button id="removePrizeImage" type="button">Remove picture</button></div></div></div><p id="prizeImageMessage" class="form-message" role="status"></p></details></form><details class="draw-options"><summary>Add participant</summary><form id="addParticipantForm" class="participant-form"><div class="inline-form"><input id="participantEmployeeId" autocomplete="off" placeholder="Employee ID" required=""><button class="button dark" type="submit">Add</button></div><p id="participantMessage" class="form-message" role="status"></p></form></details></div>
+        </div>
+        <details class="panel draw-history"><summary id="drawHistoryTitle">Recent winners</summary><div id="winnerHistory" class="winner-history"></div></details>
+        <form id="projectorSettingsForm" class="panel projector-settings" hidden=""><div><h2>Screen settings</h2></div><label for="projectorTitle">Display title<input id="projectorTitle" maxlength="90" value="Lucky Draw"></label><label for="projectorTheme">Color theme<select id="projectorTheme"><option value="gold">Thai temple fair</option><option value="indigo">Midnight &amp; indigo</option><option value="emerald">Navy &amp; emerald</option></select></label><label class="check-row" for="projectorShowEmployeeId"><input id="projectorShowEmployeeId" type="checkbox" checked><span>Show employee ID</span></label><button class="button secondary" type="submit">Save settings</button><p id="projectorSettingsMessage" class="form-message" role="status"></p></form>
+      </section>
+    </main>
+  </div>
+
+  <template id="scannerTemplate">
+    <div class="scan-panel panel">
+      <div class="scan-input-pane active" data-pane="qr">
+        <div class="camera-frame"><div class="camera-copy"><strong>Camera scanner</strong><span hidden></span></div><div class="camera-reader"></div><div class="qr-guide" aria-hidden="true"><i></i><i></i><i></i><i></i></div></div>
+        <button class="button secondary wide camera-button" type="button">Start camera</button>
+        <div class="camera-controls" role="group" aria-label="Camera controls">
+          <button class="button secondary camera-torch" type="button" aria-pressed="false" hidden>Light on</button>
+          <label class="camera-zoom-control" hidden><span>Zoom</span><input class="camera-zoom" type="range" aria-label="Camera zoom" min="1" max="1" step="0.1" value="1"></label>
+        </div>
+        <p class="camera-hint" role="status"></p>
+        
+        <div class="checkin-success" hidden aria-hidden="true"><span class="checkin-success-mark"><svg viewBox="0 0 52 52" focusable="false" aria-hidden="true"><path d="M14 27l8 8 17-18"/></svg></span><strong>Checked in</strong></div>
+        <div class="scan-receipt" hidden aria-live="off"><p class="receipt-status"></p><strong class="receipt-name"></strong><p class="receipt-detail"></p></div>
+        <p class="scan-announcement" role="status" aria-live="polite" aria-atomic="true"></p>
+        <input class="camera-photo-input" type="file" accept="image/*" capture="environment" aria-label="Take a QR photo" hidden>
+        <form class="id-form inline-form"><input class="id-input" autocomplete="off" inputmode="numeric" aria-label="Employee ID" placeholder="Employee ID" required=""><button class="button dark" type="submit">Find</button></form>
+        <div class="employee-popup-scrim" hidden aria-hidden="true"></div>
+        <dialog class="employee-popup" aria-label="Confirm employee check-in">
+          <div class="popup-header"><p class="popup-title">Employee found</p><button class="popup-close" type="button" aria-label="Skip employee">&#215;</button></div>
+          <p class="popup-help" hidden></p>
+            <div class="checkin-modal" hidden="">
+              <div class="checkin-dialog" role="region" aria-label="Employee lookup result">
+                <div class="employee-detail-main"><p class="kicker modal-status">FOUND</p><div class="employee-profile"><h2 class="modal-name"></h2><div class="employee-summary"><div class="employee-portrait" hidden><div class="portrait-image"></div><div class="portrait-fallback"><span class="portrait-initials" aria-hidden="true"></span><span class="portrait-label">No photo</span></div></div><div class="employee-summary-text"><div class="employee-detail-meta" hidden=""><p class="modal-id"></p><p class="modal-department"></p></div></div></div></div><p class="modal-note" hidden=""></p></div>
+              </div>
+            </div>
+          <div class="checkin-controls">
+            <div class="checkin-controls-live" hidden="">
+              <label class="modal-reason-label" hidden="">Check-in reason<select class="modal-reason"><option value="">Choose an option</option><option value="unreadable">QR cannot scan - in draw</option><option value="lost">Lost wristband - no draw</option><option value="other">Other - no draw</option></select></label>
+              <label class="modal-detail-label" hidden="">Reason<input class="modal-detail" maxlength="200" autocomplete="off"></label>
+              <p class="modal-message form-message" role="alert"></p>
+              <div class="checkin-dialog-actions"><button class="button secondary modal-cancel" type="button">Skip</button><button class="button primary modal-submit" type="button">Check in</button></div>
+            </div>
+          </div>
+        </dialog>
+        <div class="scan-outcome" hidden="" role="status"><strong></strong><span></span></div>
+        <div class="or"><span>QR code</span></div>
+        <form class="code-form inline-form"><input class="code-input" autocomplete="off" aria-label="QR value" placeholder="QR code" required=""><button class="button dark" type="submit">Find</button></form>
+      </div>
+      <div class="mobile-checkin-actions" hidden=""><button class="button primary mobile-checkin-submit" type="button">Check in</button><button class="button secondary mobile-checkin-clear" type="button">Clear</button></div><p class="scan-message form-message" role="status"></p>
+    </div>
+    <div class="result-panel panel"><div class="empty-result"><span>⌁</span><h2>Ready to scan</h2></div><div class="person-result" hidden=""><div class="person-head"><div class="avatar"></div><div><p class="employee-id"></p><h2 class="employee-name"></h2><span class="department"></span></div></div><div class="person-status"><div><span>Check-in</span><strong class="checkin-state">Not checked in</strong></div></div><button class="button primary wide confirm-button" type="button">Confirm</button><button class="button text wide next-button" type="button">Next employee</button></div></div>
+  </template>
+  <div id="toastRegion" class="toast-region" aria-live="polite"></div>
+
+
+</body><div id="codex-agent-overlay-root" data-codex-agent-overlay-root="true"></div></html>

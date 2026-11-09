@@ -1,0 +1,5 @@
+# Core server uses only the Python standard library.
+# These two packages provide Excel import and QR PNG ZIP export:
+openpyxl>=3.1,<4
+qrcode[pil]>=8,<9
+cryptography>=43,<47

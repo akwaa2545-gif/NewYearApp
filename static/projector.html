@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#07111f">
+  <title>Projector | EventDesk</title>
+  <link rel="stylesheet" href="/static/projector.css">
+  <script defer src="/static/projector.js"></script>
+</head>
+<body data-theme="gold">
+  <main id="presentation" class="presentation" aria-live="polite">
+    <div class="ambient ambient-one" aria-hidden="true"></div>
+    <div class="ambient ambient-two" aria-hidden="true"></div>
+    <header class="presentation-header">
+      <div class="theme-lockup"><div class="theme-regions" aria-label="Hometowns across Thailand"><span>North</span><span>Isan</span><span>Central</span><span>South</span></div></div>
+      <div class="presentation-tools">
+        <span id="connectionBadge" class="connection-badge is-connecting"><i></i><span>Connecting</span></span>
+        <button id="soundToggle" class="projector-tool" type="button" aria-pressed="false" title="Sound on">Sound off</button>
+        <button id="fullscreenToggle" class="projector-tool" type="button">Full screen</button>
+      </div>
+    </header>
+
+    <section id="drawStage" class="projector-stage">
+      <div class="prize-block"><div id="projectorPrizeVisual" class="prize-visual" hidden><img id="projectorPrizeImage" alt=""></div><span>DRAW</span><strong id="projectorPrize">Prize</strong><small id="projectorRound"></small></div>
+      <div class="projector-wheel-wrap" aria-hidden="true">
+        <div class="projector-pointer"></div>
+        <div id="projectorWheel" class="projector-wheel">
+          <div class="wheel-rings"></div>
+          <div id="wheelEmployeeIds" class="wheel-employee-ids" aria-label="Sample eligible employee IDs"></div>
+          <div class="wheel-center" aria-hidden="true"></div>
+        </div>
+      </div>
+      <div class="stage-status"><strong id="phaseTitle">Ready</strong><span id="phaseDetail"></span></div>
+    </section>
+
+    <section id="winnerStage" class="winner-stage" hidden>
+      <div id="celebration" class="celebration" aria-hidden="true"></div>
+      <img id="winnerPrizeImage" class="winner-prize-image" alt="" hidden>
+      <p class="winner-kicker">CONGRATULATIONS</p>
+      <p id="projectorWinnerId" class="winner-employee-id"></p>
+      <h2 id="projectorWinnerName">Winner</h2>
+      <p id="projectorWinnerMeta"></p>
+      <div class="winner-prize-label" id="winnerPrize">Prize</div>
+      <small id="winnerRound"></small>
+    </section>
+
+    <section id="prizeBoard" class="reward-overview" aria-label="Rewards and winners">
+      <div class="reward-overview-heading"><h2>Rewards &amp; winners</h2><span id="prizeBoardPage"></span></div>
+      <div id="prizeBoardRows" class="reward-overview-grid"></div>
+      <div class="overview-actions"><button id="boardPrevious" class="projector-tool" type="button">Previous</button><span id="overviewMessage"></span><button id="boardNext" class="projector-tool" type="button">Next</button></div>
+    </section>
+    <nav id="drawNavigation" class="draw-navigation" aria-label="Draw navigation" hidden>
+      <button id="showRewards" class="projector-tool" type="button">All rewards</button>
+      <button id="prizePrevious" class="projector-tool" type="button">Previous</button>
+      <button id="confirmProjectorDraw" class="projector-tool primary-tool" type="button">Draw</button>
+      <button id="prizeNext" class="projector-tool" type="button">Next</button>
+      <span id="projectorMessage" role="status"></span>
+    </nav>
+
+    <footer class="presentation-footer"><span id="eligibleCount">0 eligible employees</span></footer>
+  </main>
+  <section id="accessScreen" class="access-screen" hidden>
+    <div><span class="access-mark">E*</span><h1>Sign in</h1><a href="/">Open sign-in</a></div>
+  </section>
+  <iframe
+    id="winnerSoundPlayer"
+    class="winner-sound-player"
+    src="https://www.youtube-nocookie.com/embed/UUjJD9Px5vI?enablejsapi=1&amp;controls=0&amp;disablekb=1&amp;playsinline=1&amp;rel=0"
+    title="Winner celebration sound"
+    tabindex="-1"
+    aria-hidden="true"
+    allow="autoplay; encrypted-media"
+    referrerpolicy="strict-origin-when-cross-origin"></iframe>
+</body>
+</html>

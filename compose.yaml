@@ -1,0 +1,17 @@
+services:
+  eventdesk:
+    build: .
+    image: eventdesk-local:1
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:18080:8080"
+    environment:
+      PARTY_HOST: 0.0.0.0
+      PARTY_COOKIE_SECURE: "1"
+      PARTY_OPEN_STAFF: "1"
+      PARTY_PUBLIC_ORIGIN: ${PARTY_PUBLIC_ORIGIN:?Set PARTY_PUBLIC_ORIGIN to the public HTTPS origin}
+    volumes:
+      - eventdesk-data:/app/data
+
+volumes:
+  eventdesk-data:
