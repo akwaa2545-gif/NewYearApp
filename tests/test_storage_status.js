@@ -395,11 +395,11 @@ test('optional offline backup failure keeps SQL online actions available', async
     {status:200, headers:{'x-eventdesk-storage':'sql','x-eventdesk-sync':'synced','x-eventdesk-backup':'stale'}},
     {status:200, headers:{'x-eventdesk-storage':'sql','x-eventdesk-sync':'synced','x-eventdesk-backup':'current'}}]);
   await f.run("api('/api/stats')");
-  assert.equal(f.node('storageStatus').textContent, 'Connected · Offline backup unavailable');
+  assert.equal(f.node('storageStatus').textContent, 'API connected · Cloudflare quota limit reached');
   assert.equal(f.node('spinButton').disabled, false);
   assert.equal(f.context.window.EventDeskStorage.current().backup, 'unavailable');
   await f.run("api('/api/stats')");
-  assert.equal(f.node('storageStatus').textContent, 'Connected · Offline backup is updating');
+  assert.equal(f.node('storageStatus').textContent, 'API connected · Cloudflare backup updating');
   await f.run("api('/api/stats')");
   assert.equal(f.node('storageStatus').hidden, true);
 });

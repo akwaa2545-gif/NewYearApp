@@ -18,8 +18,8 @@ function renderStorageStatus(status) {
     const backupNotice = status.storage === 'sql' && ['stale','unavailable'].includes(status.backup);
     banner.hidden = !status.offline && !status.uncertain && !backupNotice;
     banner.textContent = status.uncertain ? 'Last save is not confirmed. Keep this page open and retry the same action.'
-      : !status.offline ? status.backup === 'unavailable' ? 'Connected · Offline backup unavailable'
-        : backupNotice ? 'Connected · Offline backup is updating' : '' : status.sync === 'recovering'
+      : !status.offline ? status.backup === 'unavailable' ? 'API connected · Cloudflare quota limit reached'
+        : backupNotice ? 'API connected · Cloudflare backup updating' : '' : status.sync === 'recovering'
       ? 'Syncing check-ins. Draws will be available when connected.'
       : 'Offline copy · Check-ins will sync when connected. Draws are unavailable offline.';
   }
