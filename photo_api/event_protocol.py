@@ -189,7 +189,7 @@ def parse_snapshot(value):
     if not isinstance(table, str) or not re.fullmatch(r'[a-z_][a-z0-9_]{0,80}', table):
         raise ProtocolError('Invalid snapshot table.')
     return SnapshotRequest(table, _integer(value.get('offset', 0)),
-                           _integer(value.get('limit', 100), 1, 100),
+                           _integer(value.get('limit', 100), 1, 1000),
                            _integer(value.get('revision')))
 
 

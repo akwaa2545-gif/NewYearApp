@@ -71,11 +71,20 @@ class EventProtocolTests(unittest.TestCase):
         page = protocol.parse_snapshot({'schema_version': 1, 'table': 'employees',
                                         'offset': 0, 'limit': 100, 'revision': 3})
         self.assertEqual((page.table, page.revision, page.limit), ('employees', 3, 100))
-        for extra in ({'limit': 101}, {'table': 'dbo;DROP TABLE users'},
+        for extra in ({'limit': 1001}, {'table': 'dbo;DROP TABLE users'},
                       {'revision': None}, {'offset': -1}):
             with self.assertRaises(protocol.ProtocolError):
                 protocol.parse_snapshot({'schema_version': 1, 'table': 'employees',
                                          'offset': 0, 'limit': 100, 'revision': 3, **extra})
+
+    def test_snapshot_page_accepts_one_thousand_rows_but_retains_typed_bounds(self):
+        request = {'schema_version': 1, 'table': 'employees', 'offset': 1000,
+                   'limit': 1000, 'revision': 3}
+        page = protocol.parse_snapshot(request)
+        self.assertEqual((page.offset, page.limit, page.revision), (1000, 1000, 3))
+        for limit in (0, -1, 1001, True, 1000.0, '1000'):
+            with self.subTest(limit=limit), self.assertRaises(protocol.ProtocolError):
+                protocol.parse_snapshot({**request, 'limit': limit})
 
     def test_replay_and_receipt_modes_are_typed_and_limited_to_safe_routes(self):
         for changes in ({'replay': 1}, {'replay': True}, {'queue_proof': 'f' * 64},

@@ -2,6 +2,7 @@
 import asyncio
 import base64
 from contextlib import contextmanager
+from datetime import datetime
 import hmac
 import json
 import os
@@ -386,8 +387,24 @@ class EventDesk(DurableObject):
             if not any(name.lower() == 'host' for name, _ in headers):
                 from urllib.parse import urlsplit
                 headers.append(('Host', urlsplit(request.url).netloc))
-            result = dispatch(app, request.method, path, headers, body,
-                              request.headers.get('CF-Connecting-IP') or 'unknown', self.config)
+            recorded_at = None
+            if queued_request is not None:
+                recorded_at = queued_request.get('recorded_at')
+                if request.method != 'POST' or path.split('?', 1)[0] != '/api/scan/checkin' \
+                        or not isinstance(recorded_at, str):
+                    raise ValueError('Queued time is only available for check-ins.')
+                stamp = datetime.fromisoformat(recorded_at.replace('Z', '+00:00'))
+                if stamp.utcoffset() is None or stamp.utcoffset().total_seconds() != 0:
+                    raise ValueError('Queued time must be UTC.')
+            previous_now = app.now
+            try:
+                if recorded_at is not None:
+                    # SQLite and SQL replay must use the same original check-in time.
+                    app.now = lambda: recorded_at
+                result = dispatch(app, request.method, path, headers, body,
+                                  request.headers.get('CF-Connecting-IP') or 'unknown', self.config)
+            finally:
+                app.now = previous_now
             captured.update(result)
             if state.rollback_requested or result['status'] >= 400:
                 raise RuntimeError('Request rolled back.')

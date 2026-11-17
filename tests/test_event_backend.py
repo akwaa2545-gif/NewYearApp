@@ -299,6 +299,25 @@ class EventBackendTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.engine.snapshot({'schema_version': 1, 'table': 'employees', 'revision': info['revision']})
 
+    def test_snapshot_thousand_row_pages_preserve_all_employee_rows_and_cursor(self):
+        with self.store.transaction() as tx:
+            tx.db.executemany('INSERT INTO employees(employee_id,name,department,qr_token) VALUES(?,?,?,?)',
+                [(f'TEST_{number:04}', 'Snapshot test', 'Test', f'snapshot-token-{number}')
+                 for number in range(1000)])
+        info = self.engine.snapshot({'schema_version': 1})
+        request = {'schema_version': 1, 'table': 'employees', 'offset': 0,
+                   'limit': 1000, 'revision': info['revision']}
+        first = self.engine.snapshot(request)
+        self.assertEqual(len(first['rows']), 1000)
+        self.assertEqual(first['next_offset'], 1000)
+        second = self.engine.snapshot({**request, 'offset': first['next_offset']})
+        self.assertEqual(len(second['rows']), 1)
+        self.assertIsNone(second['next_offset'])
+        ids = [row['id'] for row in first['rows'] + second['rows']]
+        self.assertEqual(len(set(ids)), 1001)
+        with self.assertRaises(protocol.ProtocolError):
+            self.engine.snapshot({**request, 'limit': 1001})
+
     def test_private_http_requires_bearer_and_fixed_routes_before_engine_access(self):
         token = secrets.token_urlsafe(36)
         server = EventHTTPServer(('127.0.0.1', 0), self.engine, token)

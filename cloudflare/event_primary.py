@@ -141,13 +141,27 @@ class SQLPrimary:
             pending = store.has_pending()
             if not pending and not value.get('snapshot_required'):
                 state = store.state()
+                if state['seeded'] and not state['ready']:
+                    return True  # Speculative local identities require a fresh SQL snapshot.
                 unchanged = (not value['changes'] and value['replica_complete'] and state['ready']
                              and state['revision'] == value['revision'])
                 if not unchanged:
                     store.apply_batches(value['changes'], value['revision'], value['replica_complete'],
                                         datetime.now(timezone.utc).isoformat(timespec='seconds'))
             return not pending
-        return self._use(apply)
+        try:
+            return self._use(apply)
+        except PrimaryProtocolError as error:
+            if not isinstance(error.__cause__, sqlite3.IntegrityError):
+                raise
+            # A previously acknowledged offline row may have a different SQL ID.
+            # The failed delta rolled back; invalidate before replacing it safely.
+            if self._use(lambda store: store.has_pending()) is not False:
+                raise
+            def invalidate(store):
+                store.invalidate()
+                return True
+            return True if self._use(invalidate) is True else None
 
     def _decorate(self, result, storage, *, pending=False, allow_clear=True):
         headers = [(name, text) for name, text in result['headers'] if not name.lower().startswith('x-eventdesk-')]
@@ -188,7 +202,11 @@ class SQLPrimary:
                 self.conflict_pending = True
                 return False
             # Do not apply a SQL delta over remaining unsynchronized local rows.
-            self._use(lambda store: store.acknowledge(item['operation_id']))
+            def acknowledge(store):
+                store.acknowledge(item['operation_id'])
+                if item['kind'] == 'checkin':
+                    store.invalidate()
+            self._use(acknowledge)
             latest = result
         remaining = self._use(lambda store: store.pending_metadata(1))
         if remaining and not (len(remaining) == 1 and remaining[0]['operation_id'] == current_id
@@ -283,7 +301,7 @@ class SQLPrimary:
             return
         try:
             state = self._state()
-            if state and (value.get('snapshot_required') or not state['seeded']):
+            if state and (value.get('snapshot_required') or not state['seeded'] or not state['ready']):
                 await self._bootstrap()
         except Exception:
             try:
@@ -342,9 +360,9 @@ class SQLPrimary:
             rows, offset = [], 0
             while True:
                 page = await self.transport('snapshot', {'schema_version': 1, 'table': table,
-                    'offset': offset, 'limit': 100, 'revision': revision})
+                    'offset': offset, 'limit': 1000, 'revision': revision})
                 if (not isinstance(page, dict) or page.get('schema_version') != 1 or page.get('revision') != revision
-                        or page.get('table') != table or not isinstance(page.get('rows'), list) or len(page['rows']) > 100):
+                        or page.get('table') != table or not isinstance(page.get('rows'), list) or len(page['rows']) > 1000):
                     raise PrimaryProtocolError('SQL changed during snapshot synchronization.')
                 size += len(_json(page).encode())
                 if size > MAX_SNAPSHOT_BYTES:

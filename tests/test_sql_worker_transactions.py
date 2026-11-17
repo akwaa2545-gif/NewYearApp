@@ -1,7 +1,7 @@
 """The hosted fallback must save attendance and its replay intent atomically."""
 import base64
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import inspect
 import json
 import os
@@ -174,6 +174,63 @@ class HostedFallbackTransactionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(saved['envelope'], envelope)
         self.assertEqual(base64.b64decode(saved['response']['body_base64']), response['body'])
         self.assertFalse(self.sql.in_transaction)
+
+    async def test_delayed_fallback_uses_the_replay_time_and_restores_the_live_clock(self):
+        cookie, csrf = await self.staff_session()
+        current = datetime.now(timezone.utc)
+        recorded = (current - timedelta(seconds=45)).isoformat(timespec='seconds')
+        later = current.isoformat(timespec='seconds')
+        envelope = self.checkin_envelope(cookie, csrf, recorded_at=recorded)
+        live_clock = lambda: later
+        with patch.object(app, 'now', live_clock):
+            response = await self.worker._fallback_event(envelope, 'checkin')
+            self.assertIs(app.now, live_clock)
+            self.assertEqual(app.now(), later)
+            self.assertEqual(response['status'], 200)
+            payload = json.loads(response['body'])
+            self.assertEqual(payload['person']['checked_in_at'], recorded)
+            self.assertEqual(payload['checkin']['checked_in_at'], recorded)
+            self.assertEqual(self.sql.execute('SELECT checked_in_at FROM employees').fetchone()[0], recorded)
+            self.assertEqual(self.sql.execute('SELECT checked_in_at FROM event_checkins').fetchone()[0], recorded)
+            saved = self.runtime.atomic(lambda store: store.find(envelope['operation_id']))
+            self.assertEqual(saved['envelope']['recorded_at'], recorded)
+            observed = []
+            dispatch = self.module.dispatch
+            def observe_live_clock(*args, **kwargs):
+                observed.append(app.now())
+                return dispatch(*args, **kwargs)
+            with patch.object(self.module, 'dispatch', observe_live_clock):
+                await self.staff_session()
+            self.assertEqual(observed, [later])
+
+    async def test_dispatch_exception_restores_the_clock_without_saving_a_checkin(self):
+        cookie, csrf = await self.staff_session()
+        recorded = (datetime.now(timezone.utc) - timedelta(seconds=45)).isoformat(timespec='seconds')
+        envelope = self.checkin_envelope(cookie, csrf, recorded_at=recorded)
+        original_clock = app.now
+        observed = []
+        def fail_dispatch(*_args, **_kwargs):
+            observed.append(app.now())
+            raise RuntimeError('Simulated dispatch failure.')
+        with patch.object(self.module, 'dispatch', fail_dispatch):
+            response = await self.worker._fallback_event(envelope, 'checkin')
+        self.assertEqual(response['status'], 500)
+        self.assertEqual(observed, [recorded])
+        self.assertIs(app.now, original_clock)
+        self.assertEqual(self.row_count('event_checkins'), 0)
+        self.assertEqual(self.row_count('_eventdesk_outbox'), 0)
+
+    async def test_invalid_queued_time_cannot_change_the_clock_or_save_attendance(self):
+        cookie, csrf = await self.staff_session()
+        original_clock = app.now
+        for recorded in (None, 123, 'invalid', '2026-11-17T06:00:00', '2026-11-17T06:00:00+07:00'):
+            with self.subTest(recorded=recorded):
+                response = await self.worker._fallback_event(
+                    self.checkin_envelope(cookie, csrf, recorded_at=recorded), 'checkin')
+                self.assertEqual(response['status'], 500)
+                self.assertIs(app.now, original_clock)
+                self.assertEqual(self.row_count('event_checkins'), 0)
+                self.assertEqual(self.row_count('_eventdesk_outbox'), 0)
 
     async def test_queue_write_failure_rolls_back_attendance_and_returns_failure(self):
         cookie, csrf = await self.staff_session()

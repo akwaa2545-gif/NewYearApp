@@ -157,6 +157,9 @@ class PrimaryTests(unittest.IsolatedAsyncioTestCase):
         request = self.request('/api/scan/checkin', 'POST', recorded_at='2026-11-17T01:00:00+00:00')
         await self.router.handle(request)
         async def recover(kind, payload):
+            if kind == 'snapshot':
+                return self.snapshot_reply(payload, {'employees': [
+                    {'id': 1, 'employee_id': '0000001', 'checked_in_at': 'sql-confirmed'}]}, 2)
             if payload.get('replay'):
                 self.assertEqual(self.db.execute('SELECT checked_in_at FROM employees').fetchone()[0], 'offline')
                 self.assertTrue(payload['queue_proof'])
@@ -172,6 +175,136 @@ class PrimaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.store.pending(), [])
         self.assertEqual(self.db.execute('SELECT checked_in_at FROM employees').fetchone()[0], 'sql-confirmed')
         self.assertEqual(response['status'], 200)
+
+    def snapshot_reply(self, payload, tables, revision):
+        if 'table' not in payload:
+            return {'schema_version': 1, 'revision': revision, 'tables': [
+                {'name': name, 'columns': list(self.store.tables[name]['columns']),
+                 'primary_key': list(self.store.tables[name]['primary_key']), 'row_count': len(rows)}
+                for name, rows in tables.items()]}
+        name = payload['table']
+        return {'schema_version': 1, 'revision': revision, 'table': name,
+                'rows': tables[name], 'next_offset': None}
+
+    def divergent_attendance(self):
+        self.db.execute('CREATE TABLE event_checkins(id INTEGER PRIMARY KEY, employee_id INTEGER UNIQUE '
+                        'REFERENCES employees(id), checked_in_at TEXT)')
+        tables = {**TABLES, 'event_checkins': {
+            'columns': ('id', 'employee_id', 'checked_in_at'), 'primary_key': ('id',),
+            'foreign_keys': [(0, 0, 'employees', 'employee_id', 'id', 'NO ACTION', 'NO ACTION', 'NONE')],
+            'column_info': []}}
+        self.store = ReplicaStore(self.db, tables)
+        self.router = SQLPrimary(self.transport, self.atomic, self.fallback, tables, secrets.token_hex(32))
+        with self.db:
+            self.db.execute("INSERT INTO event_checkins VALUES(2,1,'offline')")
+            self.db.execute("UPDATE employees SET checked_in_at='offline'")
+        snapshot = {'employees': [{'id': 1, 'employee_id': '0000001', 'checked_in_at': 'original-time'}],
+                    'event_checkins': [{'id': 3, 'employee_id': 1, 'checked_in_at': 'original-time'}]}
+        changes = [{'table': table, 'key': {'id': row['id']}, 'action': 'upsert', 'row': row}
+                   for table, rows in snapshot.items() for row in rows]
+        return snapshot, changes
+
+    async def test_replayed_checkin_replaces_speculative_identity_rows_from_sql_snapshot(self):
+        snapshot, changes = self.divergent_attendance()
+        queued = self.request('/api/scan/checkin', 'POST', recorded_at='2026-11-17T01:00:00+00:00')
+        with self.db:
+            self.store.enqueue(queued, 'checkin', {'status': 200})
+        replays = []
+        async def recover(kind, payload):
+            if kind == 'snapshot':
+                self.assertEqual(self.store.pending(), [])
+                self.assertFalse(self.store.state()['ready'])
+                return self.snapshot_reply(payload, snapshot, 2)
+            if payload.get('replay'):
+                replays.append(payload['operation_id'])
+            return self.reply(payload, revision=2, changes=[{'revision': 2, 'changes': changes}])
+        self.transport_impl = recover
+        response = await self.router.handle(self.request())
+        self.assertEqual(response['status'], 200)
+        self.assertEqual(replays, [queued['operation_id']])
+        self.assertEqual(self.store.pending(), [])
+        self.assertEqual(self.db.execute('SELECT * FROM event_checkins').fetchall(), [(3, 1, 'original-time')])
+        self.assertEqual(self.store.state()['revision'], 2)
+        self.assertTrue(self.store.state()['ready'])
+
+    async def test_existing_empty_outbox_identity_collision_heals_from_a_verified_sql_snapshot(self):
+        snapshot, changes = self.divergent_attendance()
+        async def healthy(kind, payload):
+            if kind == 'snapshot':
+                return self.snapshot_reply(payload, snapshot, 2)
+            return self.reply(payload, revision=2, changes=[{'revision': 2, 'changes': changes}])
+        self.transport_impl = healthy
+        response = await self.router.handle(self.request())
+        self.assertEqual(response['status'], 200)
+        self.assertEqual(self.db.execute('SELECT * FROM event_checkins').fetchall(), [(3, 1, 'original-time')])
+        self.assertTrue(self.store.state()['ready'])
+        self.assertEqual(self.store.state()['revision'], 2)
+
+    async def test_failed_collision_invalidation_never_labels_the_backup_as_synced(self):
+        snapshot, changes = self.divergent_attendance()
+        async def healthy(kind, payload):
+            if kind == 'snapshot':
+                return self.snapshot_reply(payload, snapshot, 2)
+            return self.reply(payload, revision=2, changes=[{'revision': 2, 'changes': changes}])
+        self.transport_impl = healthy
+        original_atomic = self.atomic
+        def failed_invalidation(action):
+            if action.__name__ == 'invalidate':
+                raise RuntimeError('Transient backup write failure')
+            return original_atomic(action)
+        self.router.atomic = failed_invalidation
+        response = await self.router.handle(self.request())
+        self.assertEqual(response['status'], 200)
+        self.assertEqual(self.headers(response).get('x-eventdesk-backup'), 'unavailable')
+        self.assertNotIn('x-eventdesk-uncertain', self.headers(response))
+        self.assertEqual(self.store.state()['revision'], 1)
+        self.assertEqual([kind for kind, _payload in self.calls], ['request'])
+        self.router.atomic = self.atomic
+        retry = await self.router.handle(self.request())
+        self.assertEqual(retry['status'], 200)
+        self.assertTrue(self.store.state()['ready'])
+        self.assertEqual(self.store.state()['revision'], 2)
+
+    async def test_failed_recovery_snapshot_preserves_sql_result_and_retries_after_coordinator_restart(self):
+        snapshot, changes = self.divergent_attendance()
+        queued = self.request('/api/scan/checkin', 'POST', recorded_at='2026-11-17T01:00:00+00:00')
+        with self.db:
+            self.store.enqueue(queued, 'checkin', {'status': 200})
+        replay_count = 0
+        fail_snapshot = True
+        async def recovering(kind, payload):
+            nonlocal replay_count
+            if kind == 'snapshot':
+                if fail_snapshot:
+                    raise PrimaryUnavailable('Snapshot temporarily unavailable')
+                return self.snapshot_reply(payload, snapshot, 2)
+            replay_count += int(payload.get('replay', False))
+            return self.reply(payload, revision=2, changes=[{'revision': 2, 'changes': changes}])
+        self.transport_impl = recovering
+        response = await self.router.handle(self.request())
+        self.assertEqual(response['status'], 200)
+        self.assertEqual(self.headers(response)['x-eventdesk-backup'], 'unavailable')
+        self.assertFalse(self.store.state()['ready'])
+        self.assertEqual(self.store.pending(), [])
+        self.transport_impl = self.unavailable
+        paused = await self.router.handle(self.request('/api/scan/checkin', 'POST'))
+        self.assertEqual(paused['status'], 503)
+        self.assertEqual(self.fallback_calls, [])
+        # The pending uncertain attempt is cancelled without a business replay.
+        self.router = SQLPrimary(self.transport, self.atomic, self.fallback,
+                                 self.store.tables, secrets.token_hex(32))
+        fail_snapshot = False
+        async def resolved(kind, payload):
+            if payload.get('receipt_only'):
+                return self.reply(payload, revision=2, changes=[{'revision': 2, 'changes': changes}],
+                                  receipt_found=False, cancelled=True, status=409)
+            return await recovering(kind, payload)
+        self.transport_impl = resolved
+        retry = await self.router.handle(self.request())
+        self.assertEqual(retry['status'], 200)
+        self.assertEqual(replay_count, 1)
+        self.assertTrue(self.store.state()['ready'])
+        self.assertEqual(self.db.execute('SELECT * FROM event_checkins').fetchall(), [(3, 1, 'original-time')])
 
     async def test_replay_rejection_keeps_intent_for_operator_and_blocks_new_writes(self):
         self.transport_impl = self.unavailable
@@ -249,6 +382,42 @@ class PrimaryTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(PrimaryProtocolError):
             await self.router.bootstrap()
         self.assertEqual(self.store.state()['revision'], 1)
+
+    async def test_large_snapshot_uses_bounded_thousand_row_pages_without_early_activation(self):
+        rows = [{'id': number, 'employee_id': f'{number:07}', 'checked_in_at': None}
+                for number in range(1, 1710)]
+        pages = []
+        async def snapshot(kind, payload):
+            self.assertEqual(kind, 'snapshot')
+            if 'table' not in payload:
+                return self.snapshot_reply(payload, {'employees': rows}, 4)
+            self.assertEqual(payload['limit'], 1000)
+            self.assertEqual(self.store.state()['revision'], 1)
+            self.assertFalse(self.store.state()['ready'])
+            offset = payload['offset']
+            pages.append(offset)
+            end = offset + payload['limit']
+            return {'schema_version': 1, 'revision': 4, 'table': 'employees',
+                    'rows': rows[offset:end], 'next_offset': end if end < len(rows) else None}
+        self.transport_impl = snapshot
+        await self.router.bootstrap()
+        self.assertEqual(pages, [0, 1000])
+        self.assertEqual(len(self.calls), 3)
+        self.assertEqual(self.db.execute('SELECT COUNT(*) FROM employees').fetchone()[0], 1709)
+        self.assertEqual(self.store.state()['revision'], 4)
+        self.assertTrue(self.store.state()['ready'])
+
+    async def test_oversized_snapshot_page_cannot_activate_the_fallback(self):
+        rows = [{'id': number, 'employee_id': f'{number:07}', 'checked_in_at': None}
+                for number in range(1, 1002)]
+        async def oversized(kind, payload):
+            return self.snapshot_reply(payload, {'employees': rows}, 4)
+        self.transport_impl = oversized
+        with self.assertRaises(PrimaryProtocolError):
+            await self.router.bootstrap()
+        self.assertEqual(self.store.state()['revision'], 1)
+        self.assertFalse(self.store.state()['ready'])
+        self.assertEqual(self.db.execute('SELECT COUNT(*) FROM employees').fetchone()[0], 1)
 
     async def test_missing_receipt_proof_cannot_clear_an_unknown_draw(self):
         self.transport_impl = self.unavailable

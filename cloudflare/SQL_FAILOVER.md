@@ -145,6 +145,23 @@ committed, the original result is returned. Otherwise the backend can replay
 the check-in using the recorded time. Repeated scanning and lost responses do
 not create another attendance row.
 
+SQLite and SQL can allocate different internal row IDs for that check-in.
+Acknowledging a queued check-in also marks the saved copy as needing a refresh.
+After the queue is empty, a validated SQL snapshot replaces the speculative
+SQLite rows in one transaction. Recovery does not overlay SQL attendance IDs
+onto those local rows. If snapshot delivery fails, SQL remains available and
+later application requests retry the refresh; offline changes require a ready
+saved copy.
+
+Snapshot pages request up to 1,000 rows to reduce API calls on Workers Free.
+The existing response-byte limits, total-snapshot limit, revision checks, and
+transactional activation still apply.
+
+The fallback response, SQLite attendance, and SQL replay all use the UTC time
+captured when the original check-in request arrived. Waiting for an unavailable
+API does not change that time. The fallback temporarily binds this clock only
+while dispatching that check-in, then restores the normal clock even on errors.
+
 An uncertain draw or administrative mutation is never blindly replayed. The
 coordinator requests its receipt only. If no receipt exists, SQL records a
 cancellation tombstone under the same transaction lock. A late original
@@ -318,6 +335,17 @@ owner role or `DBCC CHECKIDENT` is not required. Follow the detailed
 permissions, maintenance, protected packages, and the frozen source export.
 
 ## Verification
+
+A controlled live test on 2026-11-17 used a uniquely tagged synthetic employee
+excluded from prize draws. With the event backend stopped, the check-in returned
+`202`/SQLite/pending, one attendance row and one intent were saved in SQLite,
+and SQL still had no attendance for that employee. After restoring the backend,
+ordinary requests recovered one SQL attendance row and its operation receipt.
+Both a repeated operation UUID and a new scan kept the count at one. The original
+UTC timestamp was unchanged. The refreshed mirror was ready with an empty queue;
+all synthetic employees were removed and the original attendance count remained
+unchanged. Regression tests also cover mismatched SQL/SQLite identities and
+snapshot-refresh failure followed by retry.
 
 The implemented checks cover native SQL import integrity, concurrent business
 rules, replay, lost commit acknowledgments, cancellation fencing, mirror
