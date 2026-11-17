@@ -62,6 +62,29 @@ class BusinessRulesTests(unittest.TestCase):
         app.DB_PATH = self.original
         self.temp.cleanup()
 
+    def test_remove_prize_archives_unused_prize_but_preserves_winner(self):
+        unused = app.save_prize({'name': 'Unused test prize', 'quantity': 1}, 'admin')
+        self.assertEqual(app.remove_prize({'prize_id': unused['id']}, 'admin'), {'removed': unused['id']})
+        with app.db_connection() as db:
+            self.assertEqual(db.execute('SELECT active FROM prizes WHERE id=?',
+                                        (unused['id'],)).fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM audit_logs WHERE action='prize.removed'").fetchone()[0], 1)
+
+        awarded = app.save_prize({'name': 'Awarded test prize', 'quantity': 1}, 'admin')
+        app.import_employees([('REMOVE001', 'Prize Winner', 'Operations')], 'admin')
+        with app.db_connection() as db:
+            stamp = app.now()
+            employee_id = db.execute("SELECT id FROM employees WHERE employee_id='REMOVE001'").fetchone()[0]
+            round_id = db.execute('''INSERT INTO lucky_draw_rounds(prize_id,round_number,created_at)
+                VALUES(?,1,?)''', (awarded['id'], stamp)).lastrowid
+            db.execute('''INSERT INTO lucky_draw_winners(employee_id,round_id,prize_id,prize_name,won_at,won_by)
+                VALUES(?,?,?,?,?,?)''', (employee_id, round_id, awarded['id'], awarded['name'], stamp, 'admin'))
+        with self.assertRaisesRegex(ValueError, 'has a winner'):
+            app.remove_prize({'prize_id': awarded['id']}, 'admin')
+        with app.db_connection() as db:
+            self.assertEqual(db.execute('SELECT active FROM prizes WHERE id=?',
+                                        (awarded['id'],)).fetchone()[0], 1)
+
     def test_bundled_prizes_include_images_and_seed_only_empty_database(self):
         self.assertEqual(app.seed_bundled_prizes(), 10)
         with app.db_connection() as db:
@@ -836,6 +859,26 @@ class APITests(unittest.TestCase):
         with app.db_connection() as db:
             self.assertIsNone(db.execute('SELECT 1 FROM reward_images WHERE prize_id=?',
                                          (prize_id,)).fetchone())
+
+    def test_prize_removal_requires_draw_access(self):
+        prize = app.save_prize({'name': 'Catalog removal permission test', 'quantity': 1}, 'admin')
+        app.create_user({'username': 'catalog.remove.checkin', 'display_name': 'Check-in',
+                         'role': 'checkin_staff', 'password': 'CatalogPassword123!'}, 'admin')
+        app.create_user({'username': 'catalog.remove.draw', 'display_name': 'Draw',
+                         'role': 'lucky_draw_operator', 'password': 'CatalogPassword123!'}, 'admin')
+        checkin = self.session()
+        _, checkin_login, _ = self.request(checkin, '/api/login',
+                                           {'username': 'catalog.remove.checkin', 'password': 'CatalogPassword123!'})
+        self.assertEqual(self.request(checkin, '/api/prizes/remove', {'prize_id': prize['id']},
+                                      checkin_login['csrf'])[0], 403)
+        draw = self.session()
+        _, draw_login, _ = self.request(draw, '/api/login',
+                                       {'username': 'catalog.remove.draw', 'password': 'CatalogPassword123!'})
+        self.assertEqual(self.request(draw, '/api/prizes/remove', {'prize_id': prize['id']},
+                                      draw_login['csrf'])[0], 200)
+        status, catalog, _ = self.request(draw, '/api/prizes/catalog')
+        self.assertEqual(status, 200)
+        self.assertFalse(any(item['id'] == prize['id'] for item in catalog['prizes']))
 
     def test_wheel_preview_only_exposes_eligible_ids_to_draw_staff(self):
         app.import_employees([('PREVIEW001','Preview One','IT'),('PREVIEW002','Preview Two','IT')], 'test')

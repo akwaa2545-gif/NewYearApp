@@ -569,6 +569,7 @@ function rewardRow(item, isDraft) {
       if (isDraft) await api('/api/rewards/draft/delete', {method:'POST', data:{id:item.id}});
       else await api('/api/rewards/draft', {method:'POST', data:{source_id:item.id,name:item.name,quantity:item.quantity,action:'remove'}});
       resetRewardForm(); await loadRewards();
+      if (!isDraft) $('rewardMessage').textContent = 'Prize marked for removal. Select Save reward changes to finish.';
     } catch (error) { $('rewardMessage').textContent = error.message; }
   });
   actions.append(edit, remove); row.append(detail, actions); return row;
@@ -617,6 +618,15 @@ async function loadPrizeCatalog() {
         remove.addEventListener('click', () => changePrizeCatalogPhoto(prize.id, null));
         actions.append(remove);
       }
+      if (['admin','staff','lucky_draw_operator'].includes(state.profile?.role)) {
+        const removePrize = document.createElement('button'); removePrize.type = 'button';
+        removePrize.className = 'button secondary';
+        removePrize.textContent = prize.drawn ? 'Has winner' : 'Remove prize';
+        removePrize.disabled = Boolean(prize.drawn);
+        if (prize.drawn) removePrize.title = 'Prizes with winners cannot be removed.';
+        else removePrize.addEventListener('click', () => removePrizeFromCatalog(prize, removePrize));
+        actions.append(removePrize);
+      }
       card.append(visual, name, count, actions); host.append(card);
     });
   } catch (error) { message.textContent = error.message; }
@@ -633,6 +643,20 @@ async function changePrizeCatalogPhoto(prizeId, file) {
     await loadPrizeCatalog();
     message.textContent = file ? 'Photo saved.' : 'Photo removed.';
   } catch (error) { message.textContent = error.message; }
+}
+async function removePrizeFromCatalog(prize, button) {
+  if (!confirm(`Remove ${prize.name} from the prize list and projector?`)) return;
+  const message = $('prizeCatalogMessage');
+  button.disabled = true; message.textContent = 'Removing prize...';
+  try {
+    await api('/api/prizes/remove', {method:'POST', data:{prize_id:prize.id}});
+    await loadPrizeCatalog();
+    await loadPrizeList();
+    message.textContent = `${prize.name} removed.`;
+  } catch (error) {
+    message.textContent = error.message;
+    button.disabled = false;
+  }
 }
 async function addRewardDraft(event) {
   event.preventDefault(); const button = $('rewardAdd'); button.disabled = true;

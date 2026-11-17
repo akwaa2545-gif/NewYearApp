@@ -2401,6 +2401,40 @@ def update_prize_photo(data, actor):
     return {'ok': True}
 
 
+def remove_prize(data, actor):
+    if not isinstance(data, dict):
+        raise ValueError('Invalid prize request.')
+    try:
+        prize_id = int(data.get('prize_id'))
+    except (TypeError, ValueError):
+        raise ValueError('Choose a prize.') from None
+    if prize_id < 1:
+        raise ValueError('Choose a prize.')
+    with db_connection() as db:
+        db.execute('BEGIN IMMEDIATE')
+        try:
+            prize = db.execute('SELECT name FROM prizes WHERE id=? AND active=1', (prize_id,)).fetchone()
+            if not prize:
+                raise ValueError('Prize no longer exists. Refresh the list.')
+            if get_projector_state(db)['phase'] in ('spinning', 'winner_selected'):
+                raise ValueError('Wait for the current draw to finish before removing a prize.')
+            if db.execute("SELECT 1 FROM lucky_draw_winners WHERE prize_id=? AND status='active' LIMIT 1",
+                          (prize_id,)).fetchone():
+                raise ValueError('This prize has a winner and cannot be removed.')
+            if db.execute('SELECT 1 FROM reward_drafts WHERE source_id=? LIMIT 1', (prize_id,)).fetchone():
+                raise ValueError('This prize has a pending change. Remove or submit it first.')
+            stamp = now()
+            db.execute('UPDATE prizes SET active=0,updated_at=? WHERE id=?', (stamp, prize_id))
+            db.execute('''UPDATE lucky_draw_presentation SET sequence=sequence+1,updated_at=?,updated_by=?
+                WHERE singleton=1''', (stamp, actor_name(actor)))
+            audit(db, actor, 'prize.removed', 'prize', prize_id, {'name': prize['name']})
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+    return {'removed': prize_id}
+
+
 def publish_reward_drafts(data, actor):
     ids = data.get('ids')
     if not isinstance(ids, list) or not ids: raise ValueError('Add a reward first.')
@@ -3595,6 +3629,10 @@ class PartyHandler(BaseHTTPRequestHandler):
                 user = self.authorize(modify=True)
                 if not user: return
                 return self.respond(update_prize_photo(self.read_json(), user))
+            if path == '/api/prizes/remove':
+                user = self.authorize(modify=True, roles=('lucky_draw_operator',))
+                if not user: return
+                return self.respond(remove_prize(self.read_json(), user))
             if path == '/api/rewards/draft/delete':
                 if not self.authorize(modify=True, roles=('lucky_draw_operator',)): return
                 data = self.read_json()

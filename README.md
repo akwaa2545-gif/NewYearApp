@@ -33,7 +33,7 @@ On macOS or Linux, use `python3` to create the environment and `.venv/bin/python
 
 - Staff can scan a QR code, use a handheld barcode scanner, or enter an employee ID.
 - Administrators manage employees, attendance, wristband status, and prizes.
-- Staff land on **Prizes** after sign-in to see the current prize list and photos. Every signed-in staff account can replace or remove a prize photo at the venue. Use PNG, JPG, or WebP up to 4 MB. Names and quantities stay with administrators and lucky draw operators.
+- Staff land on **Prizes** after sign-in to see the current prize list and photos. Every signed-in staff account can replace or remove a prize photo at the venue. Use PNG, JPG, or WebP up to 4 MB. Draw operators and administrators can remove a prize with no active winner directly from this page; prizes with active winners stay in the list. In **Lucky wheel**, prize edits and removals take effect after **Save reward changes**.
 - The projector view is available at `/projector`.
 - Camera streaming requires HTTPS or localhost. On LAN HTTP, use the photo picker, handheld scanner, or manual entry. Focus, zoom, and torch controls depend on the browser and camera.
 
