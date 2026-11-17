@@ -2924,6 +2924,7 @@ class PartyHandler(BaseHTTPRequestHandler):
             if path.startswith('/static/'):
                 filename = path[len('/static/'):]
                 if filename not in ('styles.css', 'app.js', 'theme-init.js', 'projector.css',
+                                    'projector-fair.css',
                                     'projector.js', 'vendor/html5-qrcode.min.js', 'vendor/jsQR.js',
                                     'camera-controls.js', 'qr-detail-scanner.js', 'qr-detail-worker.js',
                                     'wristband-support.js', 'employee-portrait.js',

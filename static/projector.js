@@ -63,6 +63,11 @@ function phaseCopy(phase) {
 }
 function setConnection(mode, label) {
   const badge = byId('connectionBadge');
+  // Hosted EventSource sends a snapshot and closes normally before reconnecting.
+  // Keep the badge live while a recent snapshot is still on screen.
+  if (label === 'Reconnecting' && Date.now() - Number(byId('presentation').dataset.lastStateAt || 0) < 10000) {
+    mode = 'online'; label = 'Live';
+  }
   badge.className = `connection-badge is-${mode}`;
   badge.querySelector('span').textContent = label;
 }
@@ -186,6 +191,11 @@ function renderPrizeBoard() {
   const board = byId('prizeBoard');
   const host = byId('prizeBoardRows');
   const count = boardPrizes.length;
+  const awarded = boardPrizes.reduce((total, prize) => total + prize.winners.length, 0);
+  const ready = boardPrizes.filter(prize => prize.winners.length < prize.quantity).length;
+  text('overviewPrizeCount', count.toLocaleString());
+  text('overviewAwardedCount', awarded.toLocaleString());
+  text('overviewReadyCount', ready.toLocaleString());
   board.hidden = currentView !== 'overview';
   byId('presentation').classList.remove('has-prize-board');
   if (!count) { host.replaceChildren(); text('overviewMessage', 'No rewards yet'); return; }
@@ -205,11 +215,15 @@ function renderPrizeBoard() {
     const reward = document.createElement('div'); reward.className = 'reward-card-name';
     const name = document.createElement('strong'); name.textContent = projectorRewardName(prize.name);
     const progress = document.createElement('small'); progress.textContent = `${prize.winners.length} of ${prize.quantity} drawn`;
+    const status = document.createElement('span'); status.className = 'reward-card-status';
+    const complete = prize.winners.length >= prize.quantity;
+    status.textContent = complete ? 'Draw complete' : 'Ready to draw';
+    row.classList.toggle('is-complete', complete);
     const number = document.createElement('span'); number.className = 'reward-card-number'; number.textContent = String(boardPage * 10 + index + 1).padStart(2, '0');
     const visual = document.createElement('div'); visual.className = 'reward-card-visual';
     if (prize.has_image) { const picture = document.createElement('img'); picture.src = `/api/rewards/image?id=${encodeURIComponent(prize.id)}&v=${lastRenderedSequence}`; picture.alt = ''; visual.append(picture); row.classList.add('has-image'); }
     else row.classList.add('text-only');
-    reward.append(name, progress);
+    reward.append(status, name, progress);
     const winner = document.createElement('div'); winner.className = 'reward-card-winner';
     const person = prize.winners[boardWinnerIndex % prize.winners.length];
     winner.textContent = person ? [person.name, person.employee_id, person.department].filter(Boolean).join(' · ') : '';
@@ -260,11 +274,13 @@ function render(state) {
   const phase = phaseOrder[state.phase] ?? 0;
   if (sequence < lastRenderedSequence || (sequence === lastRenderedSequence && phase < lastRenderedPhase)) return;
   lastRenderedSequence = sequence; lastRenderedPhase = phase;
+  byId('presentation').dataset.lastStateAt = String(Date.now());
   const isNewSpin = state.phase === 'spinning' && (currentPhase !== 'spinning' || !latestState || latestState.sequence !== state.sequence);
   currentPhase = state.phase;
   document.body.dataset.theme = ['gold', 'indigo', 'emerald'].includes(state.theme) ? state.theme : 'gold';
   const eligible = Number(state.eligible || 0);
   text('eligibleCount', `${eligible.toLocaleString()} eligible employee${eligible === 1 ? '' : 's'}`);
+  text('projectorEventName', state.event_name || 'Lucky Draw');
   document.title = `Projector | ${state.event_name || 'EventDesk'}`;
   boardPrizes = Array.isArray(state.prizes) ? state.prizes : [];
   boardSelected = state.prize || '';
