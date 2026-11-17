@@ -8,7 +8,8 @@ import json
 import re
 import uuid
 
-from .event_primary import PrimaryProtocolError, PrimaryUnavailable, SQLPrimary
+from .event_primary import PrimaryProtocolError, PrimaryUnavailable
+from .sql_online import SQLOnlinePrimary
 from .replica import ReplicaStore
 from .sqlite_adapter import SQLiteConnection, TransactionState
 from eventdesk_storage.schema import TABLES
@@ -74,7 +75,7 @@ class HostedSQLRuntime:
         if (not isinstance(config, dict) or not isinstance(config.get('secret'), str)
                 or not re.fullmatch(r'[0-9a-fA-F]{64}', config['secret'])):
             raise PrimaryProtocolError('Invalid event signing configuration.')
-        self.primary = SQLPrimary(self.transport, self.atomic, self.fallback, TABLES,
+        self.primary = SQLOnlinePrimary(self.transport, self.atomic, self.fallback, TABLES,
                                   config['secret'], diagnostic=lambda category: print(category))
         self.replica_initialized = False
 

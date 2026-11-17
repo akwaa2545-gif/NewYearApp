@@ -107,7 +107,11 @@ If the private API is unavailable, a verified last-good mirror can serve reads a
 
 Recovery is request-driven, not a background timer: incoming traffic reconciles uncertain receipts, replays queued check-ins in order with original timestamps, and applies committed SQL revisions. It does not replace SQL with a stale SQLite file. Queued-session proofs have a seven-day recovery window; rejected/conflicting entries need staff review. Inspect pending work before switching storage modes or restoring backups.
 
-This fallback still requires Cloudflare reachability, a verified mirror, and sufficient Workers/Durable Object/KV quota. If a durable intent cannot be saved, unsafe mutations halt even when SQL is reachable. No paid upgrade is required or enabled by this source; capacity and Free quota must still be monitored and rehearsed.
+SQLOnlinePrimary keeps ordinary SQL requests independent of SQLite access. SQL commits and operation receipts remain authoritative even when the backup is unavailable. Best-effort backup maintenance normally runs at most once per 60 seconds under traffic; storage errors suspend probes for 300 seconds. Known accessible queued work is reconciled before conflicting changes. An inaccessible queue is reported as unknown; unsynchronized offline attendance is not yet included in SQL or prize eligibility.
+
+The fallback still requires Cloudflare reachability, a ready last-good copy, and available storage quota. If the API and SQLite storage are both unavailable, new offline check-ins cannot be saved. The saved copy can lag by roughly a minute during normal traffic, or longer during quota/API failures. Keep the existing free resources and monitor the separate Worker, Durable Object, KV, and storage limits.
+
+Before mutations, supported browsers retain only a SHA-256 request identity key and UUID metadata. Retries reuse the identity; unrelated SQL reads cannot clear an uncertain save. An exact authoritative operation receipt resolves it. Unavailable browser storage limits this protection to memory until reload. Never clear an unresolved operation merely to enable a new draw.
 
 ## Employee photos
 

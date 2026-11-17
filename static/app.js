@@ -2,24 +2,24 @@
 
 const $ = (id) => document.getElementById(id);
 const state = {csrf:null, profile:null, view:'home', workspaces:{}, wheelTurn:0, drawing:false, prizeImageUploading:false, keyBuffer:'', keyAt:0, projectorSource:null, adminChecked:null, adminDrawCount:null, adminLoading:false, adminRefreshPending:false, adminEmployeeOperation:null, adminAttendanceOperation:null, adminDrawOperation:null, adminDialog:null, attendancePage:1, attendanceRequestId:0, wristbandPerson:null, wristbandRequestId:0, wristbandLoading:false, wristbandSaving:false, wristbandOperation:null};
-const uncertainApiOperations = new Map();
-
-function storageOffline() {
-  const status = window.EventDeskStorage?.current();
-  return status?.offline === true || status?.uncertain === true;
-}
 
 function updateDrawAvailability() {
   const button = $('spinButton');
-  if (button) button.disabled = state.drawing || state.prizeImageUploading || storageOffline();
+  if (button) {
+    const status = window.EventDeskStorage?.current();
+    button.disabled = state.drawing || state.prizeImageUploading || status?.offline === true;
+    button.textContent = status?.uncertain ? 'Retry draw' : 'Draw';
+  }
 }
 
 function renderStorageStatus(status) {
   const banner = $('storageStatus');
   if (banner) {
-    banner.hidden = !status.offline && !status.uncertain;
-    banner.textContent = status.uncertain ? 'Last save is not confirmed. Reconnect before making another change.'
-      : !status.offline ? '' : status.sync === 'recovering'
+    const backupNotice = status.storage === 'sql' && ['stale','unavailable'].includes(status.backup);
+    banner.hidden = !status.offline && !status.uncertain && !backupNotice;
+    banner.textContent = status.uncertain ? 'Last save is not confirmed. Keep this page open and retry the same action.'
+      : !status.offline ? status.backup === 'unavailable' ? 'Connected · Offline backup unavailable'
+        : backupNotice ? 'Connected · Offline backup is updating' : '' : status.sync === 'recovering'
       ? 'Syncing check-ins. Draws will be available when connected.'
       : 'Offline copy · Check-ins will sync when connected. Draws are unavailable offline.';
   }
@@ -32,18 +32,19 @@ async function api(path, options={}) {
   const method = options.method || 'GET';
   const headers = {...(options.headers || {})};
   const body = options.data === undefined ? undefined : JSON.stringify(options.data);
-  const requestKey = JSON.stringify([path, method, body, state.csrf]);
-  const operationId = method === 'POST' ? uncertainApiOperations.get(requestKey)
-    || window.EventDeskStorage?.operationId() : null;
+  const csrf = state.csrf;
+  const requestKey = JSON.stringify([path, method, body, csrf]);
+  const mutation = method === 'POST' && !['/api/lookup','/api/login','/api/logout','/api/staff-session'].includes(path);
+  const operationId = method === 'POST' ? mutation && window.EventDeskStorage?.prepareOperation
+    ? await window.EventDeskStorage.prepareOperation(requestKey) : window.EventDeskStorage?.operationId() : null;
   const observation = window.EventDeskStorage?.beginRequest();
-  const mutation = method === 'POST' && path !== '/api/lookup';
+  const wasUncertain = window.EventDeskStorage?.current().uncertain;
   const uncertain = () => {
     if (!mutation || !operationId) return;
-    uncertainApiOperations.set(requestKey, operationId);
     window.EventDeskStorage?.markUncertain(operationId, observation);
   };
   if (operationId) headers['X-EventDesk-Operation-Id'] = operationId;
-  if (state.csrf && method !== 'GET') headers['X-CSRF-Token'] = state.csrf;
+  if (csrf && method !== 'GET') headers['X-CSRF-Token'] = csrf;
   if (options.data !== undefined) headers['Content-Type'] = 'application/json';
   let response;
   const lookupMayRetry = path === '/api/lookup';
@@ -73,13 +74,16 @@ async function api(path, options={}) {
     uncertain();
     throw new Error('Cannot read the server reply. Retry the same action.');
   }
+  const receipt = response.headers.get('X-EventDesk-Operation-Resolved');
+  if (mutation && receipt && receipt !== operationId) {
+    uncertain();
+    throw new Error('Cannot confirm the server reply. Retry the same action.');
+  }
   if (mutation && response.status >= 500) uncertain();
-  const resolvedOperation = mutation && response.ok ? operationId : null;
-  if (resolvedOperation) uncertainApiOperations.delete(requestKey);
-  const storage = window.EventDeskStorage?.update(response.headers, payload, observation, resolvedOperation);
-  if (response.headers.get('X-EventDesk-Uncertain') === 'clear' && !storage?.uncertain
-      && response.headers.get('X-EventDesk-Storage') === 'sql'
-      && response.headers.get('X-EventDesk-Sync') === 'synced') uncertainApiOperations.clear();
+  const resolvedOperation = mutation && (response.ok || receipt === operationId
+    || response.status < 500 && !wasUncertain) ? operationId : null;
+  if (resolvedOperation) await window.EventDeskStorage?.completeOperation?.(resolvedOperation);
+  window.EventDeskStorage?.update(response.headers, payload, observation);
   if (!response.ok) {
     if (response.status === 401 && path !== '/api/login') showLogin();
     const gatewayMessage = [502,503,504].includes(response.status)
@@ -582,7 +586,8 @@ async function loadPrizeList() {
   config.prizes.filter(prize => prize.active).forEach(prize => {
     const option = document.createElement('option'); option.value = String(prize.id);
     option.textContent = `${prize.name} (${prize.remaining} remaining)`;
-    option.dataset.prizeName = prize.name; option.disabled = prize.remaining <= 0;
+    option.dataset.prizeName = prize.name;
+    option.disabled = prize.remaining <= 0 && !window.EventDeskStorage?.current().uncertain;
     select.append(option);
   });
   if ([...select.options].some(option => option.value === previous && !option.disabled)) select.value = previous;
@@ -1236,7 +1241,7 @@ function createWorkspace(hostId, mode) {
 async function drawWinner(event) {
   event.preventDefault();
   if (state.drawing) return;
-  if (storageOffline()) return toast('Draws are unavailable offline.', 'error');
+  if (window.EventDeskStorage?.current().offline) return toast('Draws are unavailable offline.', 'error');
   if (state.prizeImageUploading) return toast('Wait for the upload.', 'error');
   const selected = $('prizeSelect').selectedOptions[0];
   const prizeId = $('prizeSelect').value;
@@ -1245,7 +1250,16 @@ async function drawWinner(event) {
   if (!prize) return;
   state.drawing = true; $('spinButton').disabled = true; $('winnerReveal').hidden = true; $('drawMessage').textContent = 'Selecting a winner securely…';
   try {
-    await setProjectorPhase('preparing', {prize, round_name:round}, false);
+    if (window.EventDeskStorage?.current().uncertain) {
+      // Validate the exact saved request before any projector update or other write.
+      const key = JSON.stringify(['/api/draw', 'POST', JSON.stringify({prize_id:prizeId, round_name:round}), state.csrf]);
+      try { await window.EventDeskStorage.prepareOperation(key); }
+      catch (error) {
+        const preparingKey = JSON.stringify(['/api/projector/state', 'POST', JSON.stringify({phase:'preparing', prize, round_name:round}), state.csrf]);
+        await window.EventDeskStorage.prepareOperation(preparingKey);
+        await setProjectorPhase('preparing', {prize, round_name:round}, false);
+      }
+    } else await setProjectorPhase('preparing', {prize, round_name:round}, false);
     const payload = await api('/api/draw', {method:'POST', data:{prize_id:prizeId, round_name:round}});
     state.wheelTurn += 1800 + Math.floor(Math.random() * 360);
     $('luckyWheel').style.transform = `rotate(${state.wheelTurn}deg)`;
@@ -1267,7 +1281,7 @@ async function drawWinner(event) {
   } catch (error) {
     $('drawMessage').textContent = error.message; $('drawMessage').className = 'form-message error';
     state.drawing = false; updateDrawAvailability();
-    if (error.code !== 'draw_in_progress') setProjectorPhase('ready_for_next', {}, false).catch(() => {});
+    if (error.code !== 'draw_in_progress' && !window.EventDeskStorage?.current().uncertain) setProjectorPhase('ready_for_next', {}, false).catch(() => {});
   }
 }
 

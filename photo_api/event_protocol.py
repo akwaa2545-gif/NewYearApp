@@ -61,6 +61,7 @@ class Command:
     queue_proof: str | None = None
     receipt_only: bool = False
     cancel_if_missing: bool = False
+    include_replica: bool = True
 
 
 @dataclass(frozen=True)
@@ -111,7 +112,7 @@ def _pairs(value):
 def parse_command(value):
     allowed = {'schema_version', 'operation_id', 'method', 'path', 'headers',
                'body_base64', 'client_ip', 'after_revision', 'recorded_at',
-               'replay', 'queue_proof', 'receipt_only', 'cancel_if_missing'}
+               'replay', 'queue_proof', 'receipt_only', 'cancel_if_missing', 'include_replica'}
     _object(value, allowed, {'schema_version', 'method', 'path', 'headers',
                              'body_base64', 'client_ip', 'after_revision'})
     method, path = value['method'], value['path']
@@ -156,6 +157,9 @@ def parse_command(value):
     if any(type(flag) is not bool for flag in flags):
         raise ProtocolError('Invalid request mode.')
     replay, receipt_only, cancel_if_missing = flags
+    include_replica = value.get('include_replica', True)
+    if type(include_replica) is not bool:
+        raise ProtocolError('Invalid request mode.')
     recorded_at, proof = value.get('recorded_at'), value.get('queue_proof')
     if recorded_at is not None:
         try:
@@ -176,7 +180,7 @@ def parse_command(value):
         raise ProtocolError('Invalid receipt lookup mode.')
     return Command(operation_id, method, path, _pairs(value['headers']), body,
                    client_ip, _integer(value['after_revision']), recorded_at,
-                   replay, proof, receipt_only, cancel_if_missing)
+                   replay, proof, receipt_only, cancel_if_missing, include_replica)
 
 
 def parse_snapshot(value):
@@ -194,7 +198,7 @@ def parse_snapshot(value):
 
 
 def command_hash(command):
-    """Cursor/IP are transport context; original authentication remains bound."""
+    """Cursor/IP/replica mode are transport context; authentication remains bound."""
     value = {'method': command.method, 'path': command.path,
              'headers': sorted((name.lower(), text) for name, text in command.headers),
              'body_base64': base64.b64encode(command.body).decode('ascii')}

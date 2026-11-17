@@ -135,6 +135,8 @@ class EventEngine:
         available = MAX_RESPONSE_BYTES - len(dumps(base)) - 512 - reserve_bytes
         if available < 0:
             raise ProtocolError('Application response is too large.')
+        if not command.include_replica:
+            return {**base, 'changes': [], 'replica_complete': False, 'snapshot_required': False}
         changes, complete, needs_snapshot = tx.replication(command.after_revision, available)
         return {**base, 'changes': changes, 'replica_complete': complete, 'snapshot_required': needs_snapshot}
 

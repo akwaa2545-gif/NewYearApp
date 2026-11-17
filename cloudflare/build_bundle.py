@@ -19,7 +19,7 @@ CHUNK_BYTES = 512 * 1024
 RUNTIME_FILES = (
     '__init__.py', 'crypto_compat.py', 'handler_adapter.py', 'hosted_storage.py',
     'qr_image.py', 'sqlite_adapter.py',
-    'event_primary.py', 'event_runtime.py', 'event_policy.py', 'replica.py',
+    'event_primary.py', 'event_runtime.py', 'event_policy.py', 'replica.py', 'sql_online.py',
 )
 PACKAGES = ('qrcode', 'openpyxl', 'et_xmlfile')
 

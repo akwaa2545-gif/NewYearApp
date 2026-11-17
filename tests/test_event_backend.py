@@ -82,6 +82,42 @@ class EventBackendTests(unittest.TestCase):
         with self.store.transaction() as tx:
             self.assertEqual(tx.db.execute('SELECT COUNT(*) FROM staff_sessions').fetchone()[0], 1)
 
+    def test_sql_only_get_and_post_do_not_read_replication(self):
+        from photo_api.event_store import EventTransaction
+        with patch.object(EventTransaction, 'replication', side_effect=AssertionError('Replica unavailable')) as replica:
+            session = self.engine.handle(self.command(include_replica=False))
+            cookie = next(value.split(';')[0] for name, value in session['headers'] if name.lower() == 'set-cookie')
+            csrf = json.loads(base64.b64decode(session['body_base64']))['csrf']
+            checked_in = self.engine.handle(self.command('/api/scan/checkin', data={'code': '0000123'},
+                headers=[('Cookie', cookie), ('X-CSRF-Token', csrf)], include_replica=False))
+            state = self.engine.handle(self.command('/api/me', method='GET',
+                headers=[('Cookie', cookie)], include_replica=False))
+            for result in (session, checked_in, state):
+                self.assertEqual(result['status'], 200)
+                self.assertEqual(result['changes'], [])
+                self.assertFalse(result['replica_complete'])
+                self.assertFalse(result['snapshot_required'])
+            self.assertGreater(checked_in['revision'], session['revision'])
+            replica.assert_not_called()
+        with self.store.transaction() as tx:
+            self.assertEqual(tx.db.execute('SELECT COUNT(*) FROM event_checkins').fetchone()[0], 1)
+
+    def test_replica_mode_switch_after_lost_ack_reuses_original_receipt(self):
+        value = self.command(include_replica=False)
+        first = self.engine.handle(value)
+        retry = self.engine.handle({**value, 'include_replica': True})
+        default_retry = self.engine.handle({key: item for key, item in value.items() if key != 'include_replica'})
+        for result in (retry, default_retry):
+            self.assertTrue(result['receipt_found'])
+            self.assertEqual(result['body_base64'], first['body_base64'])
+            self.assertEqual(result['headers'], first['headers'])
+            self.assertEqual(result['revision'], first['revision'])
+            self.assertTrue(result['replica_complete'])
+            self.assertTrue(result['changes'])
+        with self.store.transaction() as tx:
+            self.assertEqual(tx.db.execute('SELECT COUNT(*) FROM staff_sessions').fetchone()[0], 1)
+            self.assertEqual(tx.receipt(value['operation_id'])['response']['body_base64'], first['body_base64'])
+
     def test_audit_time_and_ip_changes_do_not_repeat_a_committed_checkin(self):
         cookie, csrf = self.staff()
         value = self.command('/api/scan/checkin', data={'code': '0000123'},

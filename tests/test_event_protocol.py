@@ -34,6 +34,27 @@ class EventProtocolTests(unittest.TestCase):
         other = protocol.parse_command({**value, 'body_base64': base64.b64encode(b'{}').decode()})
         self.assertNotEqual(protocol.command_hash(left), protocol.command_hash(other))
 
+    def test_replica_mode_defaults_true_and_does_not_change_request_identity(self):
+        value = self.command(recorded_at='2026-11-17T00:00:00Z')
+        default = protocol.parse_command(value)
+        excluded = protocol.parse_command({**value, 'include_replica': False})
+        included = protocol.parse_command({**value, 'include_replica': True})
+        self.assertTrue(default.include_replica)
+        self.assertFalse(excluded.include_replica)
+        self.assertTrue(included.include_replica)
+        self.assertEqual(protocol.command_hash(default), protocol.command_hash(excluded))
+        self.assertEqual(protocol.command_hash(default), protocol.command_hash(included))
+        secret = 'a1' * 32
+        self.assertEqual(protocol.offline_proof(secret, default), protocol.offline_proof(secret, excluded))
+        for value in (None, 0, 1, '', 'false', [], {}):
+            with self.subTest(value=value), self.assertRaises(protocol.ProtocolError):
+                protocol.parse_command(self.command(include_replica=value))
+
+    def test_replica_mode_cannot_be_supplied_as_an_application_header(self):
+        for name in ('include_replica', 'Include-Replica', 'X-Include-Replica'):
+            with self.subTest(name=name), self.assertRaises(protocol.ProtocolError):
+                protocol.parse_command(self.command(headers=[[name, 'false']]))
+
     def test_invalid_methods_paths_headers_and_identifiers_are_rejected(self):
         cases = [
             {'method': 'DELETE'}, {'path': '//example.invalid/api/me'},

@@ -24,7 +24,7 @@ class BuildBundleTests(unittest.TestCase):
         (self.root / 'cloudflare' / 'worker.py').write_text('ENTRYPOINT = True\n', encoding='utf-8')
         for name in ('__init__.py', 'crypto_compat.py', 'handler_adapter.py',
                      'hosted_storage.py', 'qr_image.py', 'sqlite_adapter.py',
-                     'event_primary.py', 'event_runtime.py', 'event_policy.py', 'replica.py'):
+                     'event_primary.py', 'event_runtime.py', 'event_policy.py', 'replica.py', 'sql_online.py'):
             (self.root / 'cloudflare' / name).write_text('RUNTIME_ADAPTER = True\n', encoding='utf-8')
         metadata = self.root / 'eventdesk_storage'
         metadata.mkdir()
@@ -68,6 +68,7 @@ class BuildBundleTests(unittest.TestCase):
             self.assertNotIn('cloudflare/worker.py', names)
             self.assertNotIn('cloudflare/credentials.py', names)
             self.assertIn('cloudflare/event_runtime.py', names)
+            self.assertIn('cloudflare/sql_online.py', names)
             self.assertIn('eventdesk_storage/table_catalog.json', names)
             self.assertNotIn('eventdesk_storage/connection.py', names)
             self.assertFalse(any(secret.encode() in archive.read(name) for name in names))

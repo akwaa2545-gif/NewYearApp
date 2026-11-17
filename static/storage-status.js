@@ -1,10 +1,115 @@
 /* Request identities and last confirmed storage status contain no employee data. */
 (function (global) {
   'use strict';
-  let status = Object.freeze({storage:null, sync:null, offline:false, uncertain:false});
+  let status = Object.freeze({storage:null, sync:null, backup:null, offline:false, uncertain:false});
   let requestSequence = 0, lastDegradation = 0;
   const uncertainOperations = new Set();
   const listeners = new Set();
+  const identities = new Map();
+  const observedIdentities = new Map();
+  const prefix = 'eventdesk.pending.v1.';
+  const maximumIdentities = 256;
+  let persistent = true;
+
+  // Keep unresolved IDs indefinitely: expiring one could turn a retry into another draw.
+  function restoreIdentities() {
+    let storage;
+    try { storage = global.localStorage; if (storage) void storage.length; }
+    catch (_) { persistent = false; return; }
+    if (!storage) { persistent = false; return; }
+    try {
+      for (let index = 0; index < storage.length; index += 1) {
+        const key = storage.key(index);
+        if (!key?.startsWith(prefix) || !/^[a-f0-9]{64}$/.test(key.slice(prefix.length))) continue;
+        const saved = storage.getItem(key);
+        let entry;
+        try {
+          entry = JSON.parse(saved);
+          if (!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(entry?.id) || !Number.isFinite(entry.created)) {
+            throw new Error('Invalid saved request');
+          }
+        } catch (_) {
+          // A damaged identity record cannot safely authorize a replacement command.
+          uncertainOperations.add('saved-request-unreadable');
+          persistent = false;
+          return;
+        }
+        if (identities.get(key)?.id !== entry.id) {
+          // A newer command in another tab must not replace a local retry identity.
+          const restored = {id:entry.id, created:entry.created, saved:true};
+          if (!identities.has(key)) {
+            identities.set(key, restored);
+            observedIdentities.delete(entry.id);
+          } else observedIdentities.set(entry.id, {key, entry:restored});
+          uncertainOperations.add(entry.id);
+        }
+      }
+    } catch (_) {
+      persistent = false;
+    }
+  }
+
+  async function prepareOperation(requestKey) {
+    let key = requestKey;
+    if (global.crypto?.subtle && global.TextEncoder) {
+      const digest = await global.crypto.subtle.digest('SHA-256', new global.TextEncoder().encode(requestKey));
+      key = prefix + Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, '0')).join('');
+    } else persistent = false;
+    const prepare = () => {
+      // Merge records from other tabs before deciding whether a new command is safe.
+      if (persistent) {
+        restoreIdentities();
+        publish({...status, uncertain:uncertainOperations.size > 0});
+      }
+      const existing = identities.get(key);
+      if (existing) return existing.id;
+      if (uncertainOperations.size) throw new Error('Last save is not confirmed. Retry the same action before making another change.');
+      if (identities.size + observedIdentities.size >= maximumIdentities) throw new Error('Too many saves are waiting for confirmation. Retry a pending action first.');
+      const entry = {id:operationId(), created:Date.now()};
+      identities.set(key, entry);
+      if (persistent) {
+        try {
+          global.localStorage.setItem(key, JSON.stringify(entry));
+          identities.set(key, {...entry, saved:true});
+        }
+        catch (_) { persistent = false; }
+      }
+      return entry.id;
+    };
+    if (global.navigator?.locks?.request) return global.navigator.locks.request('eventdesk-request-identity', prepare);
+    return prepare();
+  }
+
+  function resolveOperation(id) {
+    for (const [key, entry] of identities) {
+      if (entry.id !== id) continue;
+      if (entry.saved) {
+        try {
+          const saved = global.localStorage?.getItem(key);
+          if (saved && JSON.parse(saved).id === id) global.localStorage.removeItem(key);
+        }
+        catch (_) { markUncertain(id); return false; }
+      }
+      identities.delete(key);
+    }
+    observedIdentities.delete(id);
+    uncertainOperations.delete(id);
+    // Keep observed IDs retryable even if another tab has already removed its record.
+    for (const [observedId, observed] of observedIdentities) {
+      if (!identities.has(observed.key)) {
+        identities.set(observed.key, observed.entry);
+        observedIdentities.delete(observedId);
+      }
+    }
+    if (persistent) restoreIdentities();
+    return true;
+  }
+
+  async function completeOperation(id) {
+    const complete = () => resolveOperation(id);
+    if (global.navigator?.locks?.request) return global.navigator.locks.request('eventdesk-request-identity', complete);
+    return complete();
+  }
 
   function operationId() {
     const provider = global.crypto;
@@ -23,7 +128,7 @@
 
   function publish(next) {
     if (next.storage === status.storage && next.sync === status.sync
-        && next.offline === status.offline && next.uncertain === status.uncertain) return status;
+        && next.backup === status.backup && next.offline === status.offline && next.uncertain === status.uncertain) return status;
     status = Object.freeze(next);
     for (const listener of listeners) listener(status);
     return status;
@@ -40,18 +145,19 @@
     const request = observation || beginRequest();
     const source = headers?.get('X-EventDesk-Storage');
     const progress = headers?.get('X-EventDesk-Sync');
+    const backupProgress = headers?.get('X-EventDesk-Backup');
     const pending = payload?.pending_sync === true;
     const degraded = pending || source === 'sqlite' || ['pending','recovering'].includes(progress);
     if (degraded) lastDegradation = Math.max(lastDegradation, request);
     const current = request >= lastDegradation;
     const storage = current && ['sql','sqlite'].includes(source) ? source : status.storage;
     const sync = current && ['synced','pending','recovering'].includes(progress) ? progress : status.sync;
+    const backup = current && ['current','stale','unavailable'].includes(backupProgress) ? backupProgress : status.backup;
     const fullySynced = current && source === 'sql' && progress === 'synced' && !pending;
-    if (resolvedOperation) uncertainOperations.delete(resolvedOperation);
-    if (fullySynced && headers?.get('X-EventDesk-Uncertain') === 'clear') uncertainOperations.clear();
+    if (resolvedOperation) resolveOperation(resolvedOperation);
     const offline = fullySynced ? false : pending || source === 'sqlite'
       || ['pending','recovering'].includes(progress) || status.offline;
-    return publish({storage:pending ? 'sqlite' : storage, sync:pending ? 'pending' : sync,
+    return publish({storage:pending ? 'sqlite' : storage, sync:pending ? 'pending' : sync, backup,
       offline, uncertain:uncertainOperations.size > 0});
   }
 
@@ -61,6 +167,14 @@
     return () => listeners.delete(listener);
   }
 
-  global.EventDeskStorage = Object.freeze({operationId, beginRequest, markUncertain,
+  restoreIdentities();
+  status = Object.freeze({...status, uncertain:uncertainOperations.size > 0});
+  global.addEventListener?.('storage', event => {
+    if (event.key && !event.key.startsWith(prefix)) return;
+    if (event.newValue) restoreIdentities();
+    // Deletion in another tab cannot prove a local in-flight request has resolved.
+    publish({...status, uncertain:uncertainOperations.size > 0});
+  });
+  global.EventDeskStorage = Object.freeze({operationId, prepareOperation, completeOperation, beginRequest, markUncertain,
     update, subscribe, current:() => status});
 })(window);

@@ -14,11 +14,12 @@ Pages entry -> Python Worker -> ASSETS KV (static files)
 
 [pages-entry.mjs](pages-entry.mjs) forwards requests through the `EVENTDESK` service binding. [worker.py](worker.py) is the Python entry point and exports the `EventDesk` Durable Object class. The application uses the object instance named `main`; retain its namespace and identity across releases.
 
-In SQL mode, event business transactions use native SQL Server tables through the same authenticated PhotoPilot API used for photos. The original Cloudflare SQLite database is retained as a validated mirror and durable recovery queue. Explicit SQLite mode keeps the original local handler path inside synchronous Durable Object transactions. The standalone `app.py` server remains separate.
+In SQL mode, event business transactions use native SQL Server tables through the same authenticated PhotoPilot API used for photos. The original Cloudflare SQLite database is retained as a best-effort mirror and durable recovery queue. SQLOnlinePrimary keeps SQL operations available when SQLite access fails; backup maintenance is throttled to 60 seconds and storage-failure probes to 300 seconds. Explicit SQLite mode keeps the original local handler path inside synchronous Durable Object transactions. The standalone `app.py` server remains separate.
 
 | Module | Responsibility |
 | --- | --- |
 | `event_runtime.py` | Fixed authenticated event transport and atomic mirror/queue boundaries |
+| `sql_online.py` | Active quota-tolerant SQL routing, optional backup maintenance, and receipt-safe recovery. |
 | `event_primary.py` | SQL-first routing, revision synchronization, pending check-ins, receipt recovery |
 | `event_policy.py` | Session, role, origin, and CSRF validation before durable mutation intents |
 | `replica.py` | Validated mirror changes and operation-owned outbox chunks |
@@ -98,3 +99,5 @@ The gateway source is [../photo_api/pilot_worker.mjs](../photo_api/pilot_worker.
 On the main application Worker, bind `PHOTO_PILOT` to the gateway and set `PHOTO_PILOT_ACCESS_TOKEN` to the edge token. Review the fixed gateway origins in `app.py`, `cloudflare/worker.py`, and `cloudflare/event_runtime.py` for your deployment before building. Retain the fixed routes and distinct edge/backend bearer tokens. The main app checks employee membership before requesting a photo. The gateway rejects anonymous requests and bounds JPEG and event envelopes. Original session/CSRF checks still protect event actions.
 
 An optional Pages wrapper is [../photo_api/pilot_pages_worker.mjs](../photo_api/pilot_pages_worker.mjs), using the `EVENTDESK_PHOTO_PILOT` service binding. The Windows API, SQL import process, and service installation are documented in [../DEPLOYMENT.md](../DEPLOYMENT.md).
+
+Online SQL confirmation is separate from `X-EventDesk-Backup` (`current`, `stale`, `unavailable`) and `X-EventDesk-Queue` (`clear`, `pending`, `unknown`). A SQL storage quota does not remove other free-plan limits. If the API also fails while SQLite quota is exhausted, offline check-ins are unavailable. See [SQL_FAILOVER.md](SQL_FAILOVER.md) for snapshot freshness, recovery, and exact browser retry identities.
