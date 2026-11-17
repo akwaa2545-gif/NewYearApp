@@ -2,22 +2,60 @@
 
 const $ = (id) => document.getElementById(id);
 const state = {csrf:null, profile:null, view:'home', workspaces:{}, wheelTurn:0, drawing:false, prizeImageUploading:false, keyBuffer:'', keyAt:0, projectorSource:null, adminChecked:null, adminDrawCount:null, adminLoading:false, adminRefreshPending:false, adminEmployeeOperation:null, adminAttendanceOperation:null, adminDrawOperation:null, adminDialog:null, attendancePage:1, attendanceRequestId:0, wristbandPerson:null, wristbandRequestId:0, wristbandLoading:false, wristbandSaving:false, wristbandOperation:null};
+const uncertainApiOperations = new Map();
+
+function storageOffline() {
+  const status = window.EventDeskStorage?.current();
+  return status?.offline === true || status?.uncertain === true;
+}
+
+function updateDrawAvailability() {
+  const button = $('spinButton');
+  if (button) button.disabled = state.drawing || state.prizeImageUploading || storageOffline();
+}
+
+function renderStorageStatus(status) {
+  const banner = $('storageStatus');
+  if (banner) {
+    banner.hidden = !status.offline && !status.uncertain;
+    banner.textContent = status.uncertain ? 'Last save is not confirmed. Reconnect before making another change.'
+      : !status.offline ? '' : status.sync === 'recovering'
+      ? 'Syncing check-ins. Draws will be available when connected.'
+      : 'Offline copy · Check-ins will sync when connected. Draws are unavailable offline.';
+  }
+  updateDrawAvailability();
+}
+
+window.EventDeskStorage?.subscribe(renderStorageStatus);
 
 async function api(path, options={}) {
   const method = options.method || 'GET';
   const headers = {...(options.headers || {})};
+  const body = options.data === undefined ? undefined : JSON.stringify(options.data);
+  const requestKey = JSON.stringify([path, method, body, state.csrf]);
+  const operationId = method === 'POST' ? uncertainApiOperations.get(requestKey)
+    || window.EventDeskStorage?.operationId() : null;
+  const observation = window.EventDeskStorage?.beginRequest();
+  const mutation = method === 'POST' && path !== '/api/lookup';
+  const uncertain = () => {
+    if (!mutation || !operationId) return;
+    uncertainApiOperations.set(requestKey, operationId);
+    window.EventDeskStorage?.markUncertain(operationId, observation);
+  };
+  if (operationId) headers['X-EventDesk-Operation-Id'] = operationId;
   if (state.csrf && method !== 'GET') headers['X-CSRF-Token'] = state.csrf;
   if (options.data !== undefined) headers['Content-Type'] = 'application/json';
   let response;
   const lookupMayRetry = path === '/api/lookup';
   for (let attempt = 0; attempt < (lookupMayRetry ? 2 : 1); attempt += 1) {
     try {
-      response = await fetch(path, {method, headers, credentials:'same-origin', body:options.data === undefined ? undefined : JSON.stringify(options.data)});
+      response = await fetch(path, {method, headers, credentials:'same-origin', body});
     } catch (_) {
       if (lookupMayRetry && attempt === 0) {
         await new Promise(resolve => setTimeout(resolve, 350));
         continue;
       }
+      uncertain();
       throw new Error('Cannot connect. Check your network.');
     }
     if (lookupMayRetry && attempt === 0 && [502,503,504].includes(response.status)) {
@@ -27,7 +65,21 @@ async function api(path, options={}) {
     break;
   }
   const type = response.headers.get('Content-Type') || '';
-  const payload = type.includes('json') ? await response.json().catch(() => ({})) : await response.text();
+  let payload;
+  try {
+    if (mutation && response.ok && !type.includes('json')) throw new Error('Invalid reply');
+    payload = type.includes('json') ? await response.json() : await response.text();
+  } catch (_) {
+    uncertain();
+    throw new Error('Cannot read the server reply. Retry the same action.');
+  }
+  if (mutation && response.status >= 500) uncertain();
+  const resolvedOperation = mutation && response.ok ? operationId : null;
+  if (resolvedOperation) uncertainApiOperations.delete(requestKey);
+  const storage = window.EventDeskStorage?.update(response.headers, payload, observation, resolvedOperation);
+  if (response.headers.get('X-EventDesk-Uncertain') === 'clear' && !storage?.uncertain
+      && response.headers.get('X-EventDesk-Storage') === 'sql'
+      && response.headers.get('X-EventDesk-Sync') === 'synced') uncertainApiOperations.clear();
   if (!response.ok) {
     if (response.status === 401 && path !== '/api/login') showLogin();
     const gatewayMessage = [502,503,504].includes(response.status)
@@ -772,6 +824,7 @@ function setCheckinSaving(workspace, pending) {
 
 function finishCheckin(workspace, person, kind='success', detail='') {
   const restoreFocus = Boolean(employeePopupOpen(workspace) || workspace.reviewPending);
+  const savedLabel = kind === 'pending' ? 'Saved offline' : 'Check-in saved';
   if (kind === 'checked') {
     workspace.actionPending = false;
     workspace.lookupPending = false;
@@ -785,14 +838,14 @@ function finishCheckin(workspace, person, kind='success', detail='') {
     setMessage(workspace, '');
   } else resetWorkspace(workspace, restoreFocus);
   if (workspace.announcement) {
-    workspace.announcement.textContent = `${person.name || 'Employee'}, ID ${person.employee_id}, ${kind === 'checked' ? 'already checked in' : 'check-in saved'}.${detail ? ` ${detail}` : ''}`;
+    workspace.announcement.textContent = `${person.name || 'Employee'}, ID ${person.employee_id}, ${kind === 'checked' ? 'already checked in' : savedLabel.toLowerCase()}.${detail ? ` ${detail}` : ''}`;
   }
   if (kind === 'checked') return;
   if (kind === 'success') showCheckinFeedback(workspace);
   const receipt = workspace.receipt;
-  if (!receipt) return setMessage(workspace, `${person.name || 'Employee'} · ${person.employee_id}: ${detail || (kind === 'checked' ? 'Already checked in' : 'Check-in saved')}`, 'success');
+  if (!receipt) return setMessage(workspace, `${person.name || 'Employee'} · ${person.employee_id}: ${savedLabel}${detail ? ` · ${detail}` : ''}`, kind === 'pending' ? 'warning' : 'success');
   receipt.className = `scan-receipt ${kind}`;
-  receipt.querySelector('.receipt-status').textContent = kind === 'checked' ? 'Already checked in' : 'Check-in saved';
+  receipt.querySelector('.receipt-status').textContent = savedLabel;
   receipt.querySelector('.receipt-name').textContent = person.name || 'Employee';
   receipt.querySelector('.receipt-detail').textContent = `ID ${person.employee_id} · ${person.department || 'No department'}${detail ? ` · ${detail}` : ''}`;
   receipt.hidden = false;
@@ -949,8 +1002,9 @@ async function confirmAction(workspace) {
       ...(reason ? {wristband_reason:reason} : {}), ...(detail ? {wristband_detail:detail} : {})}});
     if (!current()) return payload;
     const repeated = payload.state === 'already_done';
-    finishCheckin(workspace, payload.person, repeated ? 'checked' : 'success',
-      ['lost','other'].includes(reason) ? 'Not in draw.' : '');
+    const pending = payload.pending_sync === true;
+    finishCheckin(workspace, payload.person, pending ? 'pending' : repeated ? 'checked' : 'success',
+      [pending ? 'Will sync when connected.' : '', ['lost','other'].includes(reason) ? 'Not in draw.' : ''].filter(Boolean).join(' '));
     return payload;
   } catch (error) {
     if (!current()) return null;
@@ -1182,6 +1236,7 @@ function createWorkspace(hostId, mode) {
 async function drawWinner(event) {
   event.preventDefault();
   if (state.drawing) return;
+  if (storageOffline()) return toast('Draws are unavailable offline.', 'error');
   if (state.prizeImageUploading) return toast('Wait for the upload.', 'error');
   const selected = $('prizeSelect').selectedOptions[0];
   const prizeId = $('prizeSelect').value;
@@ -1203,7 +1258,7 @@ async function drawWinner(event) {
       $('winnerReveal').hidden = false;
       $('drawMessage').textContent = 'Winner saved.';
       $('drawMessage').className = 'form-message success';
-      state.drawing = false; $('spinButton').disabled = false;
+      state.drawing = false; updateDrawAvailability();
       refreshStats().catch(() => {});
       loadPrizeList().catch(() => {});
       loadProjectorState().catch(() => {});
@@ -1211,7 +1266,7 @@ async function drawWinner(event) {
     }, 5200);
   } catch (error) {
     $('drawMessage').textContent = error.message; $('drawMessage').className = 'form-message error';
-    state.drawing = false; $('spinButton').disabled = false;
+    state.drawing = false; updateDrawAvailability();
     if (error.code !== 'draw_in_progress') setProjectorPhase('ready_for_next', {}, false).catch(() => {});
   }
 }
@@ -1307,7 +1362,7 @@ async function uploadPrizeImage(event) {
   } catch (error) {
     message.className = 'form-message error'; message.textContent = error.message;
   } finally {
-    state.prizeImageUploading = false; $('spinButton').disabled = state.drawing; event.target.value = '';
+    state.prizeImageUploading = false; updateDrawAvailability(); event.target.value = '';
   }
 }
 
@@ -1322,7 +1377,7 @@ async function removePrizeImage() {
   } catch (error) {
     message.className = 'form-message error'; message.textContent = error.message;
   } finally {
-    state.prizeImageUploading = false; $('spinButton').disabled = state.drawing;
+    state.prizeImageUploading = false; updateDrawAvailability();
   }
 }
 

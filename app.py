@@ -2926,7 +2926,7 @@ class PartyHandler(BaseHTTPRequestHandler):
                 if filename not in ('styles.css', 'app.js', 'theme-init.js', 'projector.css',
                                     'projector.js', 'vendor/html5-qrcode.min.js', 'vendor/jsQR.js',
                                     'camera-controls.js', 'qr-detail-scanner.js', 'qr-detail-worker.js',
-                                    'wristband-support.js', 'employee-portrait.js',
+                                    'wristband-support.js', 'employee-portrait.js', 'storage-status.js',
                                     'fonts/fc-pride.otf',
                                     'assets/thai-temple-fair-background.png', 'assets/hometown-festival-background.png',
                                     'assets/childhood-hometown-background.png',

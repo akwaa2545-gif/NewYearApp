@@ -21,6 +21,9 @@ from cloudflare.crypto_compat import install as install_crypto
 from cloudflare.handler_adapter import _make_handler, _request_headers, dispatch
 from cloudflare.hosted_storage import install as install_storage
 from cloudflare.sqlite_adapter import SQLiteConnection, TransactionState
+from cloudflare.event_primary import PrimaryProtocolError, PrimaryUnavailable
+from cloudflare.event_runtime import HostedSQLRuntime, request_envelope, storage_mode
+from cloudflare.event_policy import preflight_mutation
 
 install_crypto()
 import app
@@ -288,28 +291,90 @@ class EventDesk(DurableObject):
         self.ctx.storage.transactionSync(setup)
         self.initialized = True
 
+    def _sql_runtime(self):
+        runtime = getattr(self, '_event_runtime', None)
+        if runtime is None:
+            from types import SimpleNamespace
+            runtime = HostedSQLRuntime(self, SimpleNamespace(Headers=Headers, Request=JSRequest,
+                AbortController=AbortController, Object=Object, to_js=to_js), read_body)
+            self._event_runtime = runtime
+        return runtime
+
+    def _get_sql_primary(self):
+        return self._sql_runtime().primary
+
+    async def _event_transport(self, kind, payload):
+        return await self._sql_runtime().transport(kind, payload)
+
     async def fetch(self, request):
+        try:
+            if (getattr(self.env, 'EVENT_MAINTENANCE', '0') == '1'
+                    and request_path(request).split('?', 1)[0].startswith('/api/')):
+                return response('{"error":"Moving event data. Please try again shortly."}', 503,
+                    [('Content-Type', 'application/json; charset=utf-8'), ('Retry-After', '10')])
+            mode = storage_mode(self.env)
+            if mode == 'sqlite' or request_path(request).startswith('/__deployment/'):
+                return await self._fetch_sqlite(request)
+            envelope = request_envelope(request, b'')
+            denied = preflight_mutation(envelope, self.config, self.env.PUBLIC_ORIGIN, app.parse_session)
+            if denied:
+                return json_response({'error': denied[1]}, denied[0])
+            try:
+                body = await read_body(request, app.MAX_BODY)
+            except ValueError:
+                return json_response({'error': 'Request is too large.'}, 413)
+            envelope['body_base64'] = base64.b64encode(body).decode('ascii')
+            result = await self._get_sql_primary().handle(envelope)
+            return response(result['body'], result['status'], result['headers'])
+        except ValueError as error:
+            if isinstance(error, PrimaryProtocolError):
+                return json_response({'error': 'The SQL connection needs attention.'}, 503)
+            return json_response({'error': str(error)}, 400)
+
+    async def _fallback_event(self, envelope, queue_kind):
+        path = envelope['path'].split('?', 1)[0]
+        if path.startswith('/api/employee-photo/'):
+            return {'status': 503, 'headers': [('Content-Type', 'application/json')],
+                    'body': b'{"error":"Photo unavailable."}'}
+        headers = Headers.new()
+        for name, value in envelope['headers']:
+            headers.append(name, value)
+        headers.set('CF-Connecting-IP', envelope['client_ip'])
+        options = {'method': envelope['method'], 'headers': headers}
+        if envelope['method'] == 'POST':
+            options['body'] = to_js(base64.b64decode(envelope['body_base64'], validate=True))
+        incoming = JSRequest.new(self.env.PUBLIC_ORIGIN + envelope['path'],
+                                 to_js(options, dict_converter=Object.fromEntries))
+        return await self._fetch_sqlite(incoming, capture=True,
+            queued_request=envelope if queue_kind == 'checkin' else None)
+
+    async def _fetch_sqlite(self, request, *, capture=False, queued_request=None):
+        def rejected(message, status):
+            if capture:
+                return {'status': status, 'headers': [('Content-Type', 'application/json; charset=utf-8')],
+                        'body': json.dumps({'error': message}).encode()}
+            return json_response({'error': message}, status)
         try:
             self.initialize()
         except Exception as error:
             if deployment_authorized(request, self.env):
                 import traceback
                 return json_response({'error': str(error), 'trace': traceback.format_exc()[-6000:]}, 500)
-            return json_response({'error': 'Server initialization failed.'}, 500)
+            return rejected('Server initialization failed.', 500)
         path = request_path(request)
         if path.split('?', 1)[0].startswith('/api/employee-photo/'):
             return await self.employee_photo(request, path)
         try:
             body = await read_body(request, app.MAX_BODY)
         except ValueError:
-            return json_response({'error': 'Request is too large.'}, 413)
+            return rejected('Request is too large.', 413)
         if path.startswith('/__deployment/'):
             if not deployment_authorized(request, self.env):
                 return response('Not found.', 404)
             return self.deployment(path.split('?', 1)[0], request.method, body)
         ready = list(self.ctx.storage.sql.exec("SELECT value FROM _hosted_metadata WHERE key='migration_complete'"))
         if not ready:
-            return json_response({'error': 'The employee migration is still in progress.'}, 503)
+            return rejected('The employee migration is still in progress.', 503)
         captured = {}
         def handle():
             state = TransactionState()
@@ -326,11 +391,21 @@ class EventDesk(DurableObject):
             captured.update(result)
             if state.rollback_requested or result['status'] >= 400:
                 raise RuntimeError('Request rolled back.')
+            if queued_request is not None:
+                from cloudflare.replica import ReplicaStore
+                from eventdesk_storage.schema import TABLES
+                replica_db = SQLiteConnection(self.ctx.storage.sql, state,
+                    bind_value=lambda value: to_js(value) if isinstance(value, bytes) else value)
+                wire = {'status': result['status'], 'headers': result['headers'],
+                        'body_base64': base64.b64encode(result['body']).decode('ascii')}
+                ReplicaStore(replica_db, TABLES).enqueue(queued_request, 'checkin', wire)
         try:
             self.ctx.storage.transactionSync(handle)
         except Exception:
             if not captured or captured['status'] < 400:
-                return json_response({'error': 'Server error. Please try again.'}, 500)
+                return rejected('Server error. Please try again.', 500)
+        if capture:
+            return captured
         return response(captured['body'], captured['status'], captured['headers'])
 
     def deployment(self, path, method, body):

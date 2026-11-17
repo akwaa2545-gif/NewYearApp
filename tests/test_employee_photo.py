@@ -2,7 +2,6 @@
 import io
 import json
 import os
-import secrets
 from pathlib import Path
 import sys
 import tempfile
@@ -14,9 +13,10 @@ from urllib.request import Request, build_opener
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import app
+from tests.temp_directory_cleanup import cleanup_test_directory
 
 
-TOKEN = secrets.token_hex(32)
+TOKEN = 'Synthetic-test-token-for-photo-proxy-0123456789'
 JPEG = b'\xff\xd8\xffsynthetic-photo\xff\xd9'
 
 
@@ -163,7 +163,7 @@ class EmployeePhotoHTTPTests(unittest.TestCase):
         app.DB_PATH = cls.old_database
         app.PartyHandler.config = cls.old_config
         app.PHOTO_RATE_ATTEMPTS = cls.old_rate_attempts
-        cls.temp.cleanup()
+        cleanup_test_directory(cls.temp)
 
     def cookie(self, role='staff'):
         token, claims = app.sign_session(role, self.config)

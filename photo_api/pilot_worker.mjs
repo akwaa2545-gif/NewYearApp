@@ -2,6 +2,7 @@
 // Required secrets: PHOTO_API_TOKEN and a distinct PILOT_ACCESS_TOKEN (32+ random characters).
 // PHOTO_SCOPE='all-employees' permits canonical IDs after the app's employee-master check.
 // Default/'pilot' scope requires PILOT_EMPLOYEE_IDS: exactly ten 7-digit strings.
+import { isEventRoute, proxyEventRequest } from './event_worker_proxy.mjs';
 const MAX_PHOTO_BYTES = 256 * 1024;
 const MAX_HEALTH_BYTES = 4096;
 const DEADLINE_MS = 8000;
@@ -180,9 +181,13 @@ async function proxy(request, config, selected) {
 
 export default {
   async fetch(request, env) {
+    const eventRoute = isEventRoute(new URL(request.url).pathname);
     try {
-      const config = configuration(env);
+      let config;
+      try { config = configuration(env); }
+      catch (error) { if (eventRoute) return failure(request, 401); throw error; }
       if (!await authorized(request, config.accessToken)) return failure(request, 401);
+      if (eventRoute) return await proxyEventRequest(request, config);
       if (request.method !== 'GET' && request.method !== 'HEAD') return failure(request, 405);
       const selected = route(request, config.ids);
       if (selected.error) return failure(request, selected.error);

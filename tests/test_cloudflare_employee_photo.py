@@ -1,6 +1,5 @@
 """Hosted photo requests authorize in SQL, then fetch outside the transaction."""
 import asyncio
-import secrets
 from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
@@ -8,7 +7,7 @@ from unittest.mock import AsyncMock, Mock, patch
 from test_cloudflare_worker import Headers, Reader, import_worker, request
 
 
-TOKEN = secrets.token_hex(32)
+TOKEN = 'Synthetic-hosted-photo-access-token-0123456789'
 JPEG = b'\xff\xd8\xffsynthetic-hosted-portrait\xff\xd9'
 
 
@@ -44,7 +43,7 @@ class HostedEmployeePhotoTests(unittest.IsolatedAsyncioTestCase):
             return upstream
 
         service = SimpleNamespace(fetch=AsyncMock(side_effect=fetch))
-        worker.env = SimpleNamespace(PUBLIC_ORIGIN='https://eventdesk.example', PHOTO_PILOT=service,
+        worker.env = SimpleNamespace(EVENT_STORAGE='sqlite', PUBLIC_ORIGIN='https://eventdesk.example', PHOTO_PILOT=service,
                                      PHOTO_PILOT_ACCESS_TOKEN=token)
         profile = {'role': role, 'sid': 'synthetic-photo-session', 'csrf': 'synthetic'} if role else None
         return worker, service, reader, profile

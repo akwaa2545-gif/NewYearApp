@@ -14,6 +14,7 @@ from urllib.request import HTTPCookieProcessor, Request, build_opener
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import app
+from tests.temp_directory_cleanup import cleanup_test_directory
 
 
 def new_employee(**changes):
@@ -30,7 +31,7 @@ class ManualEmployeeTests(unittest.TestCase):
 
     def tearDown(self):
         app.DB_PATH = self.original
-        self.temp.cleanup()
+        cleanup_test_directory(self.temp)
 
     def test_create_employee_wristband_participant_and_audit_without_checkin(self):
         result = app.add_employee(new_employee(), 'test.admin')
@@ -141,7 +142,7 @@ class ManualEmployeeTests(unittest.TestCase):
 
     def test_creation_works_with_hosted_sqlite_adapter(self):
         from cloudflare.sqlite_adapter import SQLiteConnection, TransactionState
-        from test_cloudflare_sqlite_adapter import FakeSQL
+        from tests.test_cloudflare_sqlite_adapter import FakeSQL
         sql = FakeSQL()
         self.addCleanup(sql.database.close)
         transaction = TransactionState()
@@ -184,7 +185,7 @@ class ManualEmployeeAPITests(unittest.TestCase):
         cls.server.server_close()
         cls.thread.join(timeout=5)
         app.DB_PATH = cls.original
-        cls.temp.cleanup()
+        cleanup_test_directory(cls.temp)
 
     def session(self):
         return build_opener(HTTPCookieProcessor(http.cookiejar.CookieJar()))
