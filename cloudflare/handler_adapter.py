@@ -28,7 +28,7 @@ class _ResponseCapture:
 
     def stream_projector_events(self):
         """Send a finite snapshot; EventSource reconnects instead of blocking."""
-        state = self.app_module.get_projector_state()
+        state = self.projector_state()
         if state['event_name'] == 'Company Party':
             state['event_name'] = self.config.get('event_name', 'Company Party')
         payload = json.dumps(state, ensure_ascii=False, separators=(',', ':'))
@@ -51,7 +51,8 @@ def _request_headers(headers, body_length):
     return result
 
 
-def _make_handler(app_module, method, path, headers, body, client_ip, config):
+def _make_handler(app_module, method, path, headers, body, client_ip, config,
+                  projector_state_provider=None):
     handler_type = type('HostedPartyHandler', (_ResponseCapture, app_module.PartyHandler), {})
     handler = object.__new__(handler_type)
     handler.app_module = app_module
@@ -65,10 +66,13 @@ def _make_handler(app_module, method, path, headers, body, client_ip, config):
     handler.wfile = io.BytesIO()
     handler.response_status = 500
     handler.response_headers = []
+    if projector_state_provider is not None:
+        handler.projector_state = projector_state_provider
     return handler
 
 
-def dispatch(app_module, method, path, headers, body=b'', client_ip='127.0.0.1', config=None):
+def dispatch(app_module, method, path, headers, body=b'', client_ip='127.0.0.1', config=None,
+             projector_state_provider=None):
     """Return ``status``, ordered header pairs, and body bytes for one request.
 
     ``config`` can be supplied directly or through the patched ``load_config``.
@@ -78,7 +82,8 @@ def dispatch(app_module, method, path, headers, body=b'', client_ip='127.0.0.1',
     if not isinstance(body, (bytes, bytearray, memoryview)):
         raise TypeError('The request body must be bytes.')
     body = bytes(body)
-    handler = _make_handler(app_module, method, path, Message(), body, client_ip, config)
+    handler = _make_handler(app_module, method, path, Message(), body, client_ip, config,
+                            projector_state_provider)
     try:
         if not isinstance(method, str) or not isinstance(path, str):
             raise ValueError('Invalid request.')

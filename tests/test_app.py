@@ -62,6 +62,24 @@ class BusinessRulesTests(unittest.TestCase):
         app.DB_PATH = self.original
         self.temp.cleanup()
 
+    def test_bundled_prizes_include_images_and_seed_only_empty_database(self):
+        self.assertEqual(app.seed_bundled_prizes(), 10)
+        with app.db_connection() as db:
+            prizes = db.execute('''SELECT p.name,p.quantity,i.content_type,i.data
+                FROM prizes p JOIN reward_images i ON i.prize_id=p.id ORDER BY p.id''').fetchall()
+            self.assertEqual([row['name'] for row in prizes], [name for name, _ in app.BUNDLED_PRIZES])
+            self.assertTrue(all(row['quantity'] == 1 for row in prizes))
+            self.assertEqual([row['content_type'] for row in prizes],
+                             ['image/webp' if filename == 'No.9.png' else 'image/png'
+                              for _, filename in app.BUNDLED_PRIZES])
+            self.assertEqual(prizes[0]['data'], (app.FRONTEND / 'reward' / 'No.1.png').read_bytes())
+            db.execute('UPDATE prizes SET quantity=2 WHERE name=?', (prizes[0]['name'],))
+        self.assertTrue(all(prize['has_image'] for prize in app.get_projector_state()['prizes']))
+        self.assertEqual(app.seed_bundled_prizes(), 0)
+        with app.db_connection() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM prizes').fetchone()[0], 10)
+            self.assertEqual(db.execute('SELECT quantity FROM prizes ORDER BY id LIMIT 1').fetchone()[0], 2)
+
     def test_attendance_removal_requires_confirmation_and_preserves_history(self):
         app.import_employees([('E901', 'Test One', 'IT'), ('E902', 'Test Two', 'IT')], 'test')
         with app.db_connection() as db:
@@ -782,6 +800,42 @@ class APITests(unittest.TestCase):
         self.assertEqual((status, profile['role']), (200, 'admin'))
         status, profile, _ = self.request(self.session(), '/api/login', {'password':'safestaffpass'})
         self.assertEqual((status, profile['role']), (200, 'staff'))
+
+    def test_all_named_staff_can_view_prize_photos_without_draw_access(self):
+        image = (app.FRONTEND / 'reward' / 'No.1.png').read_bytes()
+        with app.db_connection() as db:
+            stamp = app.now()
+            prize_id = db.execute('''INSERT INTO prizes(name,quantity,active,created_at,updated_at)
+                VALUES(?,1,1,?,?)''', ('Staff photo catalog prize', stamp, stamp)).lastrowid
+            db.execute('INSERT INTO reward_images(prize_id,content_type,data) VALUES(?,?,?)',
+                       (prize_id, 'image/png', image))
+        self.assertEqual(self.request(self.session(), '/api/prizes/catalog')[0], 401)
+        for role in ('checkin_staff', 'verification_staff', 'lucky_draw_operator'):
+            username = 'catalog.' + role
+            password = 'CatalogPassword123!'
+            app.create_user({'username': username, 'display_name': role,
+                             'role': role, 'password': password}, 'legacy-admin')
+            client = self.session()
+            status, login, _ = self.request(client, '/api/login',
+                                            {'username': username, 'password': password})
+            self.assertEqual(status, 200)
+            status, catalog, _ = self.request(client, '/api/prizes/catalog')
+            self.assertEqual(status, 200)
+            self.assertTrue(any(prize['id'] == prize_id and prize['has_image'] for prize in catalog['prizes']))
+            response = client.open(self.base + '/api/rewards/image?id=' + str(prize_id))
+            self.assertEqual(response.headers.get_content_type(), 'image/png')
+            self.assertEqual(response.read(), image)
+            self.assertEqual(self.request(client, '/api/prizes/photo',
+                {'prize_id': prize_id, 'data_url': 'data:image/png;base64,' + base64.b64encode(image).decode()},
+                login['csrf'])[0], 200)
+            if role != 'lucky_draw_operator':
+                self.assertEqual(self.request(client, '/api/draw/config')[0], 403)
+                self.assertEqual(self.request(client, '/api/rewards/image?draft=1')[0], 403)
+        self.assertEqual(self.request(client, '/api/prizes/photo',
+                                      {'prize_id': prize_id, 'clear': True}, login['csrf'])[0], 200)
+        with app.db_connection() as db:
+            self.assertIsNone(db.execute('SELECT 1 FROM reward_images WHERE prize_id=?',
+                                         (prize_id,)).fetchone())
 
     def test_wheel_preview_only_exposes_eligible_ids_to_draw_staff(self):
         app.import_employees([('PREVIEW001','Preview One','IT'),('PREVIEW002','Preview Two','IT')], 'test')

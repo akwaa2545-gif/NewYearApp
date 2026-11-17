@@ -81,8 +81,8 @@ function showApp(profile) {
     card.hidden = !card.dataset.roles.split(' ').includes(profile.role);
   });
   document.title = `${profile.event_name || 'Company Party'} · Staff`;
-  const requestedView = location.hash === '#/' ? 'home' : /^#\/(checkin|verify|draw|admin|attendance|wristband)$/.exec(location.hash)?.[1];
-  goView(requestedView || (profile.role === 'admin' ? 'admin' : 'home'));
+  const requestedView = location.hash === '#/' ? 'home' : /^#\/(checkin|verify|draw|prizes|admin|attendance|wristband)$/.exec(location.hash)?.[1];
+  goView(requestedView || (profile.role === 'admin' ? 'admin' : 'prizes'));
   const projectorSettings = $('projectorSettingsForm');
   projectorSettings.hidden = profile.role !== 'admin';
   if (profile.role === 'admin') loadProjectorSettings().catch(() => {});
@@ -110,7 +110,7 @@ async function login(event) {
 }
 
 function goView(name) {
-  if (!['home','checkin','verify','draw','admin','attendance','wristband'].includes(name)) name = 'home';
+  if (!['home','checkin','verify','draw','prizes','admin','attendance','wristband'].includes(name)) name = 'home';
   if (name === 'verify' && state.profile?.role !== 'verification_staff') name = 'checkin';
   const permitted = {checkin:['admin','staff','checkin_staff'], attendance:['admin','staff','checkin_staff'], wristband:['admin','staff','checkin_staff'], verify:['admin','staff','verification_staff'], draw:['admin','staff','lucky_draw_operator'], admin:['admin']};
   if (permitted[name] && !permitted[name].includes(state.profile?.role)) name = 'home';
@@ -130,6 +130,7 @@ function goView(name) {
   window.scrollTo({top:0, behavior:'smooth'});
   if (name === 'home' || name === 'draw') refreshStats().catch(() => {});
   if (name === 'attendance') loadAttendance();
+  if (name === 'prizes') loadPrizeCatalog();
   if (name === 'admin') refreshAdmin().catch(() => {});
   if (name === 'draw') {
     loadPrizeList().catch(error => { $('drawMessage').textContent = error.message; });
@@ -582,6 +583,56 @@ async function loadRewards() {
   $('rewardCount').textContent = `${rewardData.prizes.length} reward${rewardData.prizes.length === 1 ? '' : 's'}`;
   $('rewardSetupSummary').textContent = rewardData.drafts.length ? `${rewardData.drafts.length} pending` : '';
   $('rewardPublish').disabled = !rewardData.drafts.length;
+}
+async function loadPrizeCatalog() {
+  const host = $('prizeCatalog'), message = $('prizeCatalogMessage');
+  host.replaceChildren(); message.textContent = 'Loading prizes...';
+  try {
+    const {prizes} = await api('/api/prizes/catalog');
+    if (!prizes.length) { message.textContent = 'No prizes available yet.'; return; }
+    message.textContent = `${prizes.length} prizes`;
+    prizes.forEach(prize => {
+      const card = document.createElement('article'); card.className = 'prize-catalog-card';
+      const visual = document.createElement('div'); visual.className = 'prize-catalog-image';
+      if (prize.has_image) {
+        const img = document.createElement('img'); img.src = `/api/rewards/image?id=${encodeURIComponent(prize.id)}`;
+        img.alt = `Photo of ${prize.name}`; img.loading = 'lazy'; visual.append(img);
+      } else visual.textContent = 'No photo';
+      const name = document.createElement('h2'); name.textContent = prize.name;
+      const count = document.createElement('p');
+      count.textContent = `${Math.max(0, prize.quantity - prize.drawn)} of ${prize.quantity} remaining`;
+      const actions = document.createElement('div'); actions.className = 'prize-catalog-actions';
+      const label = document.createElement('label'); label.className = 'button secondary';
+      label.textContent = prize.has_image ? 'Replace photo' : 'Add photo';
+      const input = document.createElement('input'); input.type = 'file';
+      input.accept = 'image/png,image/jpeg,image/webp';
+      input.addEventListener('change', () => {
+        const file = input.files?.[0];
+        if (file) changePrizeCatalogPhoto(prize.id, file);
+      });
+      label.append(input); actions.append(label);
+      if (prize.has_image) {
+        const remove = document.createElement('button'); remove.type = 'button';
+        remove.className = 'button secondary'; remove.textContent = 'Remove photo';
+        remove.addEventListener('click', () => changePrizeCatalogPhoto(prize.id, null));
+        actions.append(remove);
+      }
+      card.append(visual, name, count, actions); host.append(card);
+    });
+  } catch (error) { message.textContent = error.message; }
+}
+async function changePrizeCatalogPhoto(prizeId, file) {
+  const message = $('prizeCatalogMessage');
+  if (file && (file.size > 4 * 1024 * 1024 || !['image/png','image/jpeg','image/webp'].includes(file.type))) {
+    message.textContent = 'Use PNG, JPG or WebP, up to 4 MB.'; return;
+  }
+  message.textContent = file ? 'Saving photo...' : 'Removing photo...';
+  try {
+    const data = file ? {prize_id:prizeId, data_url:await readImageDataUrl(file)} : {prize_id:prizeId, clear:true};
+    await api('/api/prizes/photo', {method:'POST', data});
+    await loadPrizeCatalog();
+    message.textContent = file ? 'Photo saved.' : 'Photo removed.';
+  } catch (error) { message.textContent = error.message; }
 }
 async function addRewardDraft(event) {
   event.preventDefault(); const button = $('rewardAdd'); button.disabled = true;

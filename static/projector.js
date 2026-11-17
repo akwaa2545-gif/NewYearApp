@@ -8,6 +8,7 @@ let soundEnabled = localStorage.getItem('eventdesk-projector-sound') === 'on';
 let winnerSoundReady = false, winnerSoundPlaying = false;
 let boardPrizes = [], boardPage = 0, boardWinnerIndex = 0, boardSelected = '';
 let refreshInFlight = false, lastRenderedSequence = -1, lastRenderedPhase = -1;
+let lastStateAt = 0;
 let projectorCsrf = '', projectorDrawing = false, currentPhase = 'waiting', pendingPrize = null;
 let currentView = 'overview', latestState = null, selectedPrizeId = null;
 let wheelIds = [], wheelIdOffset = 0, wheelIdsLoading = false;
@@ -275,13 +276,13 @@ async function loadState() {
   const response = await fetch('/api/projector/state', {credentials: 'same-origin'});
   if (response.status === 401 || response.status === 403) throw Object.assign(new Error('access'), {status: response.status});
   if (!response.ok) throw new Error('state');
-  const state = await response.json(); render(state); return state;
+  const state = await response.json(); render(state); lastStateAt = Date.now(); return state;
 }
 function connect() {
   stream?.close(); stream = new EventSource('/api/projector/events', {withCredentials: true});
   stream.addEventListener('open', () => setConnection('online', 'Live'));
-  stream.addEventListener('draw-state', event => { setConnection('online', 'Live'); try { render(JSON.parse(event.data)); } catch (_) {} });
-  stream.onerror = () => { setConnection('offline', 'Reconnecting'); loadState().catch(() => {}); };
+  stream.addEventListener('draw-state', event => { setConnection('online', 'Live'); try { render(JSON.parse(event.data)); lastStateAt = Date.now(); } catch (_) {} });
+  stream.onerror = () => { setConnection('offline', 'Reconnecting'); };
 }
 async function initialize() {
   byId('winnerSoundPlayer').addEventListener('load', () => {
@@ -321,11 +322,11 @@ window.addEventListener('offline', () => setConnection('offline', 'Offline'));
 window.addEventListener('beforeunload', () => { stopWinnerSound(); stream?.close(); });
 setInterval(() => { if (boardPrizes.length) { boardWinnerIndex += 1; renderPrizeBoard(); } }, 8000);
 setInterval(() => { if (wheelIds.length > 12 && !['spinning','winner_selected'].includes(currentPhase)) { wheelIdOffset = (wheelIdOffset + 12) % wheelIds.length; renderWheelIds(); } }, 3000);
-setInterval(() => { if (!document.hidden) loadWheelIds(); }, 15000);
+setInterval(() => { if (!document.hidden) loadWheelIds(); }, 60000);
 setInterval(async () => {
-  if (refreshInFlight || !byId('accessScreen').hidden) return;
+  if (refreshInFlight || !byId('accessScreen').hidden || Date.now() - lastStateAt < 15000) return;
   refreshInFlight = true;
   try { await loadState(); } catch (_) { /* The live stream continues reconnecting. */ }
   finally { refreshInFlight = false; }
-}, 3000);
+}, 30000);
 initialize();

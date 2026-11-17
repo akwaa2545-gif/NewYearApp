@@ -19,6 +19,8 @@ py -m venv .venv
 
 Setup asks for separate administrator and staff passwords, then creates private configuration and a SQLite database in `data/`. No passwords or employee records are supplied with the repository. Open [localhost:8080](http://localhost:8080).
 
+On first server start with an empty prize list, the 10 images in `static/reward/` are loaded as ready-to-draw prizes (one of each). Staff do not need to add or upload them. The prize names and image mapping are in `BUNDLED_PRIZES` near the top of `app.py`; set the final names there before the first run. Existing prize lists are left as they are when the server restarts.
+
 To try the included synthetic employees, stop the server and run this once after setup, then start the server again:
 
 ```powershell
@@ -31,6 +33,7 @@ On macOS or Linux, use `python3` to create the environment and `.venv/bin/python
 
 - Staff can scan a QR code, use a handheld barcode scanner, or enter an employee ID.
 - Administrators manage employees, attendance, wristband status, and prizes.
+- Staff land on **Prizes** after sign-in to see the current prize list and photos. Every signed-in staff account can replace or remove a prize photo at the venue. Use PNG, JPG, or WebP up to 4 MB. Names and quantities stay with administrators and lucky draw operators.
 - The projector view is available at `/projector`.
 - Camera streaming requires HTTPS or localhost. On LAN HTTP, use the photo picker, handheld scanner, or manual entry. Focus, zoom, and torch controls depend on the browser and camera.
 

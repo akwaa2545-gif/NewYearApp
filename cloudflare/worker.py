@@ -135,6 +135,8 @@ class EventDesk(DurableObject):
         self.config = json.loads(env.APP_CONFIG)
         self._stats_cache = None
         self._stats_until = 0
+        self._projector_cache = None
+        self._projector_until = 0
         self._photo_inflight = 0
 
     def authorize_employee_photo(self, request: object, path: str) -> dict:
@@ -256,6 +258,16 @@ class EventDesk(DurableObject):
         self._stats_cache, self._stats_until = stats, now + 30
         return stats
 
+    def cached_projector_state(self):
+        now = time.monotonic()
+        if self._projector_cache is not None and now < self._projector_until:
+            return self._projector_cache
+        state = app.get_projector_state()
+        self._projector_cache = state
+        # The reveal phase changes with time; otherwise writes invalidate this cache.
+        self._projector_until = now + (0.5 if state['phase'] in ('spinning', 'winner_selected') else 60)
+        return state
+
     def bind_database(self, state):
         @contextmanager
         def connection():
@@ -322,7 +334,8 @@ class EventDesk(DurableObject):
                 from urllib.parse import urlsplit
                 headers.append(('Host', urlsplit(request.url).netloc))
             result = dispatch(app, request.method, path, headers, body,
-                              request.headers.get('CF-Connecting-IP') or 'unknown', self.config)
+                              request.headers.get('CF-Connecting-IP') or 'unknown', self.config,
+                              projector_state_provider=self.cached_projector_state)
             captured.update(result)
             if state.rollback_requested or result['status'] >= 400:
                 raise RuntimeError('Request rolled back.')
@@ -331,6 +344,8 @@ class EventDesk(DurableObject):
         except Exception:
             if not captured or captured['status'] < 400:
                 return json_response({'error': 'Server error. Please try again.'}, 500)
+        if request.method == 'POST' and captured['status'] < 400:
+            self._projector_cache = None
         return response(captured['body'], captured['status'], captured['headers'])
 
     def deployment(self, path, method, body):

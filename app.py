@@ -41,6 +41,18 @@ DEFAULT_DB_PATH = ROOT / 'data' / 'party.sqlite3'
 EMPLOYEE_JSON_PATH = Path(os.environ.get('PARTY_EMPLOYEE_JSON', ROOT / 'data' / 'employees.json'))
 MAX_BODY = 8 * 1024 * 1024
 PRIZE_IMAGE_MAX_BYTES = 4 * 1024 * 1024
+BUNDLED_PRIZES = (
+    ('Prize 1 - Scooter', 'No.1.png'),
+    ('Prize 2 - Phone', 'No.2.png'),
+    ('Prize 3 - Tablet', 'NO.3.png'),
+    ('Prize 4 - Phone', 'No.4.png'),
+    ('Prize 5 - Dryer', 'No.5.png'),
+    ('Prize 6 - Washing machine', 'No.6.png'),
+    ('Prize 7 - Gold necklace', 'No.7.png'),
+    ('Prize 8 - Refrigerator', 'No.8.png'),
+    ('Prize 9 - Television', 'No.9.png'),
+    ('Prize 10 - Smartwatch', 'No.10.png'),
+)
 MAX_EMPLOYEES = 5000
 MAX_IMPORT_ROWS = 12000
 IMPORT_PREVIEW_TTL_SECONDS = 3600
@@ -278,6 +290,35 @@ def init_db():
             CREATE INDEX IF NOT EXISTS ix_event_log_time ON event_log(id DESC);
         ''')
         _run_migrations(db)
+
+
+def seed_bundled_prizes():
+    """Load the supplied prizes once for a new local event database."""
+    images = []
+    for name, filename in BUNDLED_PRIZES:
+        image = (FRONTEND / 'reward' / filename).read_bytes()
+        content_type = _detect_prize_image_type(image)
+        if not image or len(image) > PRIZE_IMAGE_MAX_BYTES or not content_type:
+            raise ValueError(f'Invalid bundled prize image: {filename}')
+        images.append((name, content_type, image))
+    with db_connection() as db:
+        db.execute('BEGIN IMMEDIATE')
+        try:
+            if db.execute('SELECT 1 FROM prizes LIMIT 1').fetchone():
+                db.rollback()
+                return 0
+            stamp = now()
+            for name, content_type, image in images:
+                prize_id = db.execute(
+                    'INSERT INTO prizes(name,quantity,active,created_at,updated_at) VALUES(?,1,1,?,?)',
+                    (name, stamp, stamp)).lastrowid
+                db.execute('INSERT INTO reward_images(prize_id,content_type,data) VALUES(?,?,?)',
+                           (prize_id, content_type, image))
+            db.commit()
+            return len(images)
+        except Exception:
+            db.rollback()
+            raise
 
 
 def _table_columns(db, table):
@@ -1032,7 +1073,10 @@ def remove_draw_history(payload, actor):
 
 def _eligible_sql(db, exclude_employee_id=None):
     clauses = [
-        "(e.checked_in_at IS NOT NULL OR EXISTS (SELECT 1 FROM event_checkins c WHERE c.employee_id=e.id))",
+        # Use the indexed checked-in IDs as the starting set. Projector refreshes
+        # run frequently, and scanning every employee exhausts hosted row reads.
+        "e.id IN (SELECT id FROM employees WHERE checked_in_at IS NOT NULL "
+        "UNION SELECT employee_id FROM event_checkins)",
         "NOT EXISTS (SELECT 1 FROM checkin_wristband_exceptions x WHERE x.employee_id=e.id AND x.reason IN ('lost','other'))"
     ]
     params = []
@@ -2307,6 +2351,56 @@ def save_reward_draft(data):
     return {'id': draft_id}
 
 
+def update_prize_photo(data, actor):
+    if not isinstance(data, dict):
+        raise ValueError('Invalid prize photo request.')
+    try:
+        prize_id = int(data.get('prize_id'))
+    except (TypeError, ValueError):
+        raise ValueError('Choose a prize.') from None
+    if prize_id < 1:
+        raise ValueError('Choose a prize.')
+    clear = data.get('clear') is True
+    if clear == bool(data.get('data_url')):
+        raise ValueError('Choose a picture or remove the current picture.')
+    image = content_type = None
+    if not clear:
+        match = re.fullmatch(r'data:(image/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=]+)',
+                             str(data['data_url']))
+        if not match:
+            raise ValueError('Choose a PNG, JPEG, or WebP image.')
+        try:
+            image = base64.b64decode(match.group(2), validate=True)
+        except (binascii.Error, ValueError):
+            raise ValueError('Invalid image.') from None
+        content_type = match.group(1)
+        if not image or len(image) > PRIZE_IMAGE_MAX_BYTES or _detect_prize_image_type(image) != content_type:
+            raise ValueError('Image must be a valid PNG, JPEG, or WebP, at most 4 MB.')
+    with db_connection() as db:
+        db.execute('BEGIN IMMEDIATE')
+        try:
+            prize = db.execute('SELECT name FROM prizes WHERE id=? AND active=1', (prize_id,)).fetchone()
+            if not prize:
+                raise ValueError('Prize no longer exists. Refresh the list.')
+            if get_projector_state(db)['phase'] in ('spinning', 'winner_selected'):
+                raise ValueError('Wait for the current draw to finish before changing a photo.')
+            db.execute('DELETE FROM reward_images WHERE prize_id=?', (prize_id,))
+            if image:
+                db.execute('INSERT INTO reward_images(prize_id,content_type,data) VALUES(?,?,?)',
+                           (prize_id, content_type, image))
+            stamp = now()
+            db.execute('UPDATE prizes SET updated_at=? WHERE id=?', (stamp, prize_id))
+            db.execute('''UPDATE lucky_draw_presentation SET sequence=sequence+1,updated_at=?,updated_by=?
+                WHERE singleton=1''', (stamp, actor_name(actor)))
+            audit(db, actor, 'prize.photo_removed' if clear else 'prize.photo_updated',
+                  'prize', prize_id, {'name': prize['name']})
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+    return {'ok': True}
+
+
 def publish_reward_drafts(data, actor):
     ids = data.get('ids')
     if not isinstance(ids, list) or not ids: raise ValueError('Add a reward first.')
@@ -2771,6 +2865,9 @@ class PartyHandler(BaseHTTPRequestHandler):
     server_version = 'EventDesk/1.0'
     config = None
 
+    def projector_state(self):
+        return get_projector_state()
+
     def log_message(self, fmt, *args):
         # Paths could contain sensitive tokens if future routes change.
         message = (fmt % args).encode('ascii', 'backslashreplace').decode('ascii')
@@ -3110,8 +3207,10 @@ class PartyHandler(BaseHTTPRequestHandler):
                     if not bool(get_setting('projector_show_employee_id', True, db)):
                         return self.respond({'items': []})
                     predicate, params = _eligible_sql(db)
+                    # The wheel labels are a sample. The draw itself still uses
+                    # the complete eligible set on the server.
                     ids = [row[0] for row in db.execute(
-                        'SELECT e.employee_id FROM employees e WHERE ' + predicate + ' ORDER BY e.employee_id COLLATE NOCASE', params)]
+                        'SELECT e.employee_id FROM employees e WHERE ' + predicate + ' LIMIT 60', params)]
                 return self.respond({'items': ids})
             if path == '/api/rewards':
                 if not self.authorize(roles=('lucky_draw_operator',)): return
@@ -3125,9 +3224,17 @@ class PartyHandler(BaseHTTPRequestHandler):
                         (SELECT COUNT(*) FROM lucky_draw_winners w WHERE w.prize_id=p.id AND w.status='active') AS drawn
                         FROM prizes p WHERE p.active=1 ORDER BY p.id''')]
                 return self.respond({'drafts': drafts, 'prizes': prizes})
+            if path == '/api/prizes/catalog':
+                if not self.authorize(): return
+                with db_connection() as db:
+                    prizes = [dict(row) for row in db.execute('''SELECT p.id,p.name,p.quantity,
+                        EXISTS(SELECT 1 FROM reward_images i WHERE i.prize_id=p.id) AS has_image,
+                        (SELECT COUNT(*) FROM lucky_draw_winners w WHERE w.prize_id=p.id AND w.status='active') AS drawn
+                        FROM prizes p WHERE p.active=1 ORDER BY p.id''')]
+                return self.respond({'prizes': prizes})
             if path == '/api/rewards/image':
-                if not self.authorize(roles=('lucky_draw_operator',)): return
                 params = parse_qs(urlsplit(self.path).query)
+                if not self.authorize(roles=('lucky_draw_operator',) if 'draft' in params else None): return
                 with db_connection() as db:
                     if 'draft' in params:
                         draft = db.execute('SELECT * FROM reward_drafts WHERE id=?', (params['draft'][0],)).fetchone()
@@ -3137,13 +3244,14 @@ class PartyHandler(BaseHTTPRequestHandler):
                             row = db.execute('SELECT content_type,data FROM reward_images WHERE prize_id=?',
                                              (draft['source_id'] if draft else None,)).fetchone()
                     else:
-                        row = db.execute('SELECT content_type,data FROM reward_images WHERE prize_id=?',
+                        row = db.execute('''SELECT i.content_type,i.data FROM reward_images i
+                            JOIN prizes p ON p.id=i.prize_id WHERE i.prize_id=? AND p.active=1''',
                                          (params.get('id', [''])[0],)).fetchone()
                 if not row: return self.fail('Reward image not found.', 404)
                 return self.send_bytes(row['data'], row['content_type'])
             if path == '/api/projector/state':
                 if not self.authorize(roles=('lucky_draw_operator',)): return
-                state = get_projector_state()
+                state = self.projector_state()
                 if state['event_name'] == 'Company Party':
                     state['event_name'] = self.config.get('event_name', 'Company Party')
                 return self.respond(state)
@@ -3267,7 +3375,7 @@ class PartyHandler(BaseHTTPRequestHandler):
         last_signature = None
         try:
             for tick in range(240):
-                state = get_projector_state()
+                state = self.projector_state()
                 if state['event_name'] == 'Company Party':
                     state['event_name'] = self.config.get('event_name', 'Company Party')
                 signature = (state['sequence'], state['phase'])
@@ -3483,6 +3591,10 @@ class PartyHandler(BaseHTTPRequestHandler):
             if path == '/api/rewards/draft':
                 if not self.authorize(modify=True, roles=('lucky_draw_operator',)): return
                 return self.respond(save_reward_draft(self.read_json()))
+            if path == '/api/prizes/photo':
+                user = self.authorize(modify=True)
+                if not user: return
+                return self.respond(update_prize_photo(self.read_json(), user))
             if path == '/api/rewards/draft/delete':
                 if not self.authorize(modify=True, roles=('lucky_draw_operator',)): return
                 data = self.read_json()
@@ -3614,6 +3726,7 @@ def make_server(host='127.0.0.1', port=8080, config=None, cert_file=None, key_fi
     init_db()
     if DB_PATH.resolve() == DEFAULT_DB_PATH.resolve():
         seed_employees_from_json()
+        seed_bundled_prizes()
     server = PartyServer((host, port), PartyHandler)
     if cert_file or key_file:
         if not cert_file or not key_file:

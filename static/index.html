@@ -48,10 +48,17 @@
           <button class="task-card verify" type="button" data-view="verify" data-roles="verification_staff" hidden=""><strong>Check ID</strong></button>
           <button class="task-card wristband" type="button" data-view="wristband" data-roles="admin staff checkin_staff"><strong>Lost wristband</strong></button>
           <button class="task-card draw" type="button" data-view="draw" data-roles="admin staff lucky_draw_operator"><strong>Lucky wheel</strong></button>
+          <button class="task-card prizes" type="button" data-view="prizes" data-roles="admin staff checkin_staff verification_staff lucky_draw_operator"><strong>Prizes</strong></button>
           <button class="task-card admin" type="button" data-view="admin" data-roles="admin" hidden=""><span class="task-number">04</span><span class="task-icon">⚙</span><strong>Admin</strong></button>
         </div>
         <div class="status-strip"><div><span>Checked in</span><strong id="checkedCount">—</strong></div><div><span>Can win</span><strong id="eligibleCount">—</strong></div><div><span>Winners</span><strong id="winnerCount">—</strong></div></div>
         
+      </section>
+
+      <section id="view-prizes" class="view prizes-view">
+        <div class="view-heading"><button class="back-button" type="button" data-view="home">Home</button><div><h1>Prizes</h1><p>Lucky wheel prizes and photos</p></div></div>
+        <p id="prizeCatalogMessage" class="form-message" role="status"></p>
+        <div id="prizeCatalog" class="prize-catalog"></div>
       </section>
 
       <section id="view-attendance" class="view attendance-view">

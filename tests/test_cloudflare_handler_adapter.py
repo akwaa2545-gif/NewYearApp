@@ -167,6 +167,20 @@ class HandlerAdapterTests(unittest.TestCase):
         anonymous = self.request('GET', '/api/projector/events')
         self.assertEqual(anonymous['status'], 401)
 
+    def test_projector_reads_use_hosted_state_provider(self):
+        cookie, _ = self.login()
+        calls = []
+        def cached_state():
+            calls.append(1)
+            return {'sequence': 7, 'phase': 'waiting', 'event_name': 'Hosted Test Event'}
+        state = self.request('GET', '/api/projector/state', cookie=cookie,
+                             projector_state_provider=cached_state)
+        events = self.request('GET', '/api/projector/events', cookie=cookie,
+                              projector_state_provider=cached_state)
+        self.assertEqual(json.loads(state['body'])['sequence'], 7)
+        self.assertIn(b'"sequence":7', events['body'])
+        self.assertEqual(len(calls), 2)
+
     def test_unknown_routes_and_unsupported_methods_have_error_statuses(self):
         self.assertEqual(self.request('GET', '/api/not-a-route')['status'], 404)
         response = self.request('PATCH', '/api/me')
