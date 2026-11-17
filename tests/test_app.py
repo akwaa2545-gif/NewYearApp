@@ -93,7 +93,7 @@ class BusinessRulesTests(unittest.TestCase):
             self.assertEqual([row['name'] for row in prizes], [name for name, _ in app.BUNDLED_PRIZES])
             self.assertTrue(all(row['quantity'] == 1 for row in prizes))
             self.assertEqual([row['content_type'] for row in prizes],
-                             ['image/webp' if filename == 'No.9.png' else 'image/png'
+                             ['image/webp' if filename == 'No.9.webp' else 'image/png'
                               for _, filename in app.BUNDLED_PRIZES])
             self.assertEqual(prizes[0]['data'], (app.FRONTEND / 'reward' / 'No.1.png').read_bytes())
             db.execute('UPDATE prizes SET quantity=2 WHERE name=?', (prizes[0]['name'],))

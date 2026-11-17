@@ -633,8 +633,8 @@ async function loadPrizeCatalog() {
 }
 async function changePrizeCatalogPhoto(prizeId, file) {
   const message = $('prizeCatalogMessage');
-  if (file && (file.size > 4 * 1024 * 1024 || !['image/png','image/jpeg','image/webp'].includes(file.type))) {
-    message.textContent = 'Use PNG, JPG or WebP, up to 4 MB.'; return;
+  if (file && file.size > 4 * 1024 * 1024) {
+    message.textContent = 'Use a picture 4 MB or smaller.'; return;
   }
   message.textContent = file ? 'Saving photo...' : 'Removing photo...';
   try {
@@ -662,8 +662,7 @@ async function addRewardDraft(event) {
   event.preventDefault(); const button = $('rewardAdd'); button.disabled = true;
   try {
     const file = $('rewardImage').files[0];
-    if (file && (file.size > 4 * 1024 * 1024 || !['image/png','image/jpeg','image/webp'].includes(file.type))) throw new Error('Use PNG, JPG or WebP, up to 4 MB.');
-    const dataUrl = file ? await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = () => reject(new Error('Cannot read image.')); reader.readAsDataURL(file); }) : undefined;
+    const dataUrl = file ? await readImageDataUrl(file) : undefined;
     await api('/api/rewards/draft', {method:'POST', data:{id:$('rewardDraftId').value || undefined, source_id:$('rewardSourceId').value || undefined, name:$('rewardName').value.trim(), quantity:Number($('rewardQuantity').value), data_url:dataUrl, remove_image:$('rewardRemoveImage').checked}});
     resetRewardForm(); await loadRewards(); $('rewardMessage').textContent = 'Draft saved.';
   } catch (error) { $('rewardMessage').textContent = error.message; }
@@ -1351,12 +1350,20 @@ function renderPrizeImageControl(payload) {
   $('prizeImageName').textContent = payload.prize_image_name || 'Prize picture';
 }
 
-function readImageDataUrl(file) {
+async function readImageDataUrl(file) {
+  if (!file.size || file.size > 4 * 1024 * 1024) throw new Error('Use a picture 4 MB or smaller.');
+  const bytes = new Uint8Array(await file.slice(0, 12).arrayBuffer());
+  const type = bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47 &&
+    bytes[4] === 0x0d && bytes[5] === 0x0a && bytes[6] === 0x1a && bytes[7] === 0x0a ? 'image/png' :
+    bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff ? 'image/jpeg' :
+    bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 &&
+    bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50 ? 'image/webp' : null;
+  if (!type) throw new Error('Use a real PNG, JPG, or WebP image. Convert HEIC photos to JPG first.');
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(reader.result);
     reader.onerror = () => reject(new Error('Could not read the selected picture.'));
-    reader.readAsDataURL(file);
+    reader.readAsDataURL(new Blob([file], {type}));
   });
 }
 
@@ -1364,13 +1371,9 @@ async function uploadPrizeImage(event) {
   const file = event.target.files?.[0];
   if (!file) return;
   const message = $('prizeImageMessage');
-  if (!['image/png','image/jpeg','image/webp'].includes(file.type)) {
-    event.target.value = '';
-    message.className = 'form-message error'; message.textContent = 'Use PNG, JPG or WebP.'; return;
-  }
   if (file.size > 4 * 1024 * 1024) {
     event.target.value = '';
-    message.className = 'form-message error'; message.textContent = 'Use a picture under 4 MB.'; return;
+    message.className = 'form-message error'; message.textContent = 'Use a picture 4 MB or smaller.'; return;
   }
   state.prizeImageUploading = true; $('spinButton').disabled = true;
   message.className = 'form-message'; message.textContent = 'Uploading prize picture…';

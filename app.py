@@ -50,7 +50,7 @@ BUNDLED_PRIZES = (
     ('Prize 6 - Washing machine', 'No.6.png'),
     ('Prize 7 - Gold necklace', 'No.7.png'),
     ('Prize 8 - Refrigerator', 'No.8.png'),
-    ('Prize 9 - Television', 'No.9.png'),
+    ('Prize 9 - Television', 'No.9.webp'),
     ('Prize 10 - Smartwatch', 'No.10.png'),
 )
 MAX_EMPLOYEES = 5000
