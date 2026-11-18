@@ -101,6 +101,8 @@ class SQLOnlinePrimary(SQLPrimary):
         headers.extend([('X-EventDesk-Storage', storage),
                         ('X-EventDesk-Sync', 'pending' if pending else 'synced'),
                         ('X-EventDesk-Backup', backup), ('X-EventDesk-Queue', queue)])
+        if self.backup_available and self.cached_state and self.cached_state['seeded']:
+            headers.append(('X-EventDesk-Backup-Revision', str(self.cached_state['revision'])))
         return {**result, 'headers': headers}
 
     async def _drain(self, current_id):

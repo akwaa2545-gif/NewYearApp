@@ -1,6 +1,6 @@
 # SQL primary storage and SQLite outage recovery
 
-Last updated: 2026-11-17.
+Last updated: 2026-11-18.
 
 This guide describes the implemented hosted storage path. SQL Server is the
 primary database. The original Cloudflare SQLite database remains a best-effort
@@ -25,7 +25,8 @@ employee records, exported databases, and access tokens outside source control.
 flowchart TD
     Browser[Browser: staff and admin UI] --> Pages[Cloudflare Pages]
     Pages --> Worker[EventDesk Worker]
-    Worker --> Coordinator[EventDesk Durable Object coordinator]
+    Worker -->|Writes, larger reads and fallback| Coordinator[EventDesk Durable Object coordinator]
+    Worker -->|Selected small online reads| Gateway
     Coordinator --> Gateway[Existing PhotoPilot gateway]
     Gateway --> Tunnel[Existing private tunnel / VPC service]
     Tunnel --> Photo[C# PhotoPilot listener: loopback 8765]
@@ -43,11 +44,34 @@ listener. C# proxies only the fixed event routes to port 8766.
 The browser uses the existing `/api/*` interface. Internal replication fields
 and SQL connection settings are not returned to the browser.
 
+### Reducing usage while retaining the Pages address
+
+The Pages address remains the public entry point. Selected small, online GET
+requests can use the same private SQL API directly from the outer Worker,
+without invoking the Durable Object. SQL still checks the current account,
+session and role. This is a server-side route; browsers never receive API bearer
+tokens or SQL credentials. Larger responses and every POST retain the existing
+coordinator path, including lookup, sign-in, check-in and draws.
+
+Under traffic, the outer Worker periodically sends a read through the coordinator
+to maintain the saved copy and recover queued work. Its gate is per isolate;
+the coordinator's own maintenance throttle still controls backup writes.
+Transport unavailability can use the original coordinator fallback. Invalid
+protocol replies or rejected service credentials cannot bypass checks through
+SQLite. Online reads do not resolve uncertain mutations or prove an empty queue.
+
+This reduces Durable Object requests and avoids repeated backup access. It does
+not remove the Workers daily request limit: the Pages API still needs a Worker.
+There is no guarantee that all features remain available after every Cloudflare
+free-tier limit is exhausted. SQL remains primary, and the original Cloudflare
+SQLite copy and outbox remain available subject to their own quotas.
+
 ## Source map
 
 | File | Responsibility |
 | --- | --- |
 | [worker.py](worker.py) | Hosted routing, maintenance gate, and atomic SQLite fallback dispatch |
+| [read_proxy.py](read_proxy.py) | Small SQL reads without Durable Object invocations, conservative status, and per-isolate coordinator probes |
 | [event_runtime.py](event_runtime.py) | Fixed service transport, request envelopes, response validation, and SQLite transaction boundary |
 | [sql_online.py](sql_online.py) | Active `SQLOnlinePrimary`: SQL requests independent of backup availability, throttled maintenance, and recovery |
 | [event_primary.py](event_primary.py) | Retained `SQLPrimary` implementation and shared protocol/recovery helpers |
@@ -103,10 +127,30 @@ there is no independent timer or scheduled backup job. SQL session activity can
 also change a revision, so stopping idle requests avoids those updates too.
 
 Both staff and projector pages stop automatic polling and close their event
-streams when hidden, unfocused, or inactive for two minutes. Key presses,
+connections when hidden, unfocused, or inactive for two minutes. Key presses,
 barcode input, taps, or returning focus resume updates with one immediate
 refresh. Submitted mutations and their results are not cancelled. Automatic
 projector prize-image refreshes pause as well.
+
+The browser uses polling rather than combining finite SSE reconnections with
+polling. Projector state keeps a short refresh interval during active use;
+home, administration, attendance, draw summaries and eligible-ID lists refresh
+less often. Scan pages have no periodic background requests. User actions still
+refresh their results immediately. Stable prize cards and image elements are
+reused instead of rebuilding the board on every unchanged state response.
+
+Within each validated backup batch, repeated staff-session updates keep only
+the final state for that session. This avoids writing every intermediate
+activity heartbeat to SQLite. Session creation, logout/revocation and final
+deletion remain represented; all original changes and revision continuity are
+validated before writing. Employee, attendance, prize and audit changes retain
+their original revision order.
+
+The projector Draw button uses the same persisted operation-identity helper as
+the main application. Lost replies retain the original UUID and show **Retry
+draw**. Switching prizes cannot replace an unresolved operation. A successful
+state refresh can confirm connectivity, but cannot resolve an uncertain draw;
+that requires the original operation's result or matching server receipt.
 
 An unattended visible projector also pauses after two minutes and keeps its
 last display. It shows **Paused · Tap to reconnect**; interact with it before

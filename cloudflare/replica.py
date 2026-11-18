@@ -152,6 +152,9 @@ class ReplicaStore:
         row = {name: self._value(table, name, value) for name, value in row.items()}
         if any(row[name] != value for name, value in key.items()):
             raise ReplicaError('Replica key mismatch.')
+        if any(column.get('notnull') and row[column['name']] is None
+               for column in entry.get('column_info', [])):
+            raise ReplicaError('Required replica field is missing.')
         return {'table': table, 'key': key, 'action': action, 'row': row}
 
     def _write(self, changes):
@@ -180,6 +183,19 @@ class ReplicaStore:
                        + ') ON CONFLICT (' + conflict + ') ' + suffix)
                 self.db.execute(sql, tuple(change['row'][name] for name in columns))
 
+    @staticmethod
+    def _coalesce_sessions(batches):
+        # Session activity has no business-table relationships. Keep its final
+        # validated state while retaining every other table's revision order.
+        last = {_json(change['key']): (batch_number, change_number)
+                for batch_number, changes in enumerate(batches)
+                for change_number, change in enumerate(changes)
+                if change['table'] == 'staff_sessions'}
+        return [[change for change_number, change in enumerate(changes)
+                 if change['table'] != 'staff_sessions' or
+                 last[_json(change['key'])] == (batch_number, change_number)]
+                for batch_number, changes in enumerate(batches)]
+
     def apply_batches(self, batches, head_revision, complete, synced_at=None):
         state = self.state()
         if type(head_revision) is not int or head_revision < state['revision'] or type(complete) is not bool:
@@ -202,7 +218,7 @@ class ReplicaStore:
             validated.append(changes)
         if complete and cursor != head_revision:
             raise ReplicaError('Replica revisions are incomplete.')
-        for changes in validated:
+        for changes in self._coalesce_sessions(validated):
             self._write(changes)
         ready = state['seeded'] and complete and cursor == head_revision
         self.db.execute('UPDATE _eventdesk_replica_meta SET revision=?,ready=?,last_sync=? WHERE singleton=1',

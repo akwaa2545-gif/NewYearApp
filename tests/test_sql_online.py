@@ -26,6 +26,18 @@ class OnlineTests(unittest.IsolatedAsyncioTestCase):
                                        self.store.tables, self.router.secret.hex())
         return self.router
 
+    async def test_backup_revision_header_reports_only_accessible_seeded_copy(self):
+        self.online()
+        result = await self.router.handle(self.request())
+        self.assertEqual(self.headers(result).get('x-eventdesk-backup-revision'), '1')
+        self.router.backup_available = False
+        result = self.router._decorate({'status': 200, 'headers': [], 'body': b'{}'}, 'sql')
+        self.assertNotIn('x-eventdesk-backup-revision', self.headers(result))
+        self.router.backup_available = True
+        self.router.cached_state = {**self.router.cached_state, 'seeded': False}
+        result = self.router._decorate({'status': 200, 'headers': [], 'body': b'{}'}, 'sql')
+        self.assertNotIn('x-eventdesk-backup-revision', self.headers(result))
+
     async def test_cold_quota_failure_never_blocks_sql_reads_checkins_or_draws(self):
         for error in (RuntimeError('quota exceeded'), sqlite3.IntegrityError('broken replica')):
             attempts = []

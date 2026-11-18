@@ -113,7 +113,7 @@ class SQLPrimary:
     def _state(self):
         return self._use(lambda store: store.state())
 
-    def _wire(self, envelope, value):
+    def _wire(self, envelope, value, *, capture=False):
         if (not isinstance(value, dict) or type(value.get('schema_version')) is not int
                 or value['schema_version'] != 1 or value.get('operation_id') != envelope.get('operation_id')
                 or not _integer(value.get('after_revision')) or value['after_revision'] != envelope['after_revision']
@@ -121,8 +121,8 @@ class SQLPrimary:
                 or not isinstance(value.get('changes'), list) or type(value.get('replica_complete')) is not bool
                 or type(value.get('snapshot_required', False)) is not bool):
             raise PrimaryProtocolError('Invalid event response envelope.')
-        _captured(value)
-        return value
+        captured = _captured(value)
+        return captured if capture else value
 
     async def _request(self, envelope):
         state = self._state()

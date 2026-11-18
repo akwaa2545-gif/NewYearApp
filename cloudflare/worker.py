@@ -23,14 +23,16 @@ from cloudflare.handler_adapter import _make_handler, _request_headers, dispatch
 from cloudflare.hosted_storage import install as install_storage
 from cloudflare.sqlite_adapter import SQLiteConnection, TransactionState
 from cloudflare.event_primary import PrimaryProtocolError, PrimaryUnavailable
-from cloudflare.event_runtime import HostedSQLRuntime, request_envelope, storage_mode
+from cloudflare.event_runtime import HostedSQLRuntime, request_envelope, sql_transport, storage_mode
 from cloudflare.event_policy import preflight_mutation
+from cloudflare.read_proxy import OnlineReadProxy, eligible_read
 
 install_crypto()
 import app
 _uncached_stats = app.get_stats
 PHOTO_TIMEOUT_SECONDS = 8
 PHOTO_INFLIGHT_LIMIT = 8
+_online_reads = OnlineReadProxy()
 
 
 SECURITY_HEADERS = {
@@ -107,7 +109,35 @@ class Default(WorkerEntrypoint):
                 return response('Not found.', 404)
         if not deployment and request.method in ('GET', 'HEAD') and not path.startswith('/api/'):
             return await self.asset(request, path)
-        return await self.env.STATE.getByName('main').fetch(request)
+        try:
+            mode = storage_mode(self.env)
+            optimized = (not deployment and mode == 'sql' and eligible_read(request)
+                         and getattr(self.env, 'EVENT_MAINTENANCE', '0') != '1'
+                         and getattr(self.env, 'EVENT_DIRECT_READS', '1') == '1'
+                         and getattr(self.env, 'PHOTO_PILOT', None) is not None)
+            if optimized:
+                return await _online_reads.fetch(request, self._read_transport,
+                    self._coordinate, lambda value: response(value['body'], value['status'], value['headers']))
+            result = await self._coordinate(request)
+            if request.method == 'POST':
+                _online_reads.observe(result)
+            return result
+        except PrimaryProtocolError:
+            return json_response({'error': 'The SQL connection needs attention.'}, 503)
+        except ValueError as error:
+            return json_response({'error': str(error)}, 400)
+
+    async def _coordinate(self, request):
+        fetched = await self.env.STATE.getByName('main').fetch(request)
+        # Python fetch wraps Headers as a case-sensitive mapping. Observe the
+        # underlying JS response, retaining case-insensitive headers and cookies.
+        return getattr(fetched, 'js_response', fetched)
+
+    async def _read_transport(self, kind, payload):
+        from types import SimpleNamespace
+        js = SimpleNamespace(Headers=Headers, Request=JSRequest, AbortController=AbortController,
+                             Object=Object, to_js=to_js)
+        return await sql_transport(self.env, js, read_body, kind, payload, timeout=8)
 
     async def asset(self, request, path):
         key = 'index.html' if path == '/' else 'projector.html' if path in ('/projector', '/projector/') else path.removeprefix('/static/') if path.startswith('/static/') else None

@@ -31,7 +31,7 @@ function fixture(page, includeActivity = true) {
   const run = code => vm.runInContext(code, context);
   if (page) {
     run(fs.readFileSync(`static/${page}.js`, 'utf8').replace(/\ninitialize\(\);\s*$/, '\n'));
-    if (page === 'app') run("state.profile = {role:'staff'}; state.view = 'draw'; refreshStats = async () => fetch('/stats'); loadWinnerHistory = async () => fetch('/history'); renderProjectorState = () => {}; startAppBackground(); connectProjectorState();");
+    if (page === 'app') run("state.profile = {role:'staff'}; state.view = 'draw'; refreshStats = async () => fetch('/stats'); loadWinnerHistory = async () => fetch('/history'); loadProjectorState = async () => fetch('/api/projector/state'); renderProjectorState = () => {}; startAppBackground(); connectProjectorState();");
     else run('render = () => {}; projectorReady = true; startProjectorBackground(); refreshProjectorBackground();');
   }
   async function tick(ms) {
@@ -64,9 +64,9 @@ test('interaction renews the two-minute deadline; focus and visibility cannot du
 });
 
 for (const page of ['app', 'projector']) {
-  test(`${page} closes SSE and makes no automatic requests while hidden, blurred, or idle`, async () => {
+  test(`${page} uses polling without SSE and makes no automatic requests while hidden, blurred, or idle`, async () => {
     const f = fixture(page); await f.settle();
-    assert.equal(f.sources.length, 1);
+    assert.equal(f.sources.length, 0);
     for (const reason of ['hidden', 'blur', 'idle']) {
       if (reason === 'hidden') { f.document.hidden = true; f.document.dispatch('visibilitychange'); }
       if (reason === 'blur') f.focus(false);
@@ -83,7 +83,7 @@ for (const page of ['app', 'projector']) {
       await f.settle();
       const expected = page === 'app' ? 3 : 2;
       assert.equal(f.calls.length - count, expected, 'one immediate refresh of each current view resource');
-      assert.equal(f.sources.filter(source => !source.closed).length, 1);
+      assert.equal(f.sources.length, 0);
       const resumedCount = f.calls.length, sourceCount = f.sources.length;
       f.window.dispatch('focus'); f.document.dispatch('input'); f.document.dispatch('visibilitychange');
       await f.settle();
@@ -94,7 +94,7 @@ for (const page of ['app', 'projector']) {
   test(`${page} repeated scanner keyboard input prevents idle suspension`, async () => {
     const f = fixture(page); await f.settle();
     for (let i = 0; i < 5; i++) { await f.tick(90000); f.document.dispatch('keydown'); }
-    assert.equal(f.sources.filter(source => !source.closed).length, 1);
+    assert.equal(f.sources.length, 0);
     assert.ok(f.calls.length > 0);
   });
   test(`${page} automatic connections fail closed when activity helper is unavailable`, async () => {
@@ -106,20 +106,44 @@ for (const page of ['app', 'projector']) {
   test(`${page} checks idle time before reconnecting even when timers were delayed`, async () => {
     const f = fixture(page); await f.settle();
     f.jump(120001);
-    f.run(page === 'app' ? 'connectProjectorState()' : 'connect()');
+    f.run(page === 'app' ? 'connectProjectorState()' : 'refreshProjectorBackground()');
     assert.ok(f.sources.every(source => source.closed));
   });
-  test(`${page} replaces terminally closed streams once while active`, async () => {
+  test(`${page} repeated network notifications cannot duplicate polling timers`, async () => {
     const f = fixture(page); await f.settle();
-    f.sources[0].close();
-    f.run(page === 'app' ? 'updateNetwork()' : 'connect()');
-    assert.equal(f.sources.length, 2);
-    f.run(page === 'app' ? 'updateNetwork()' : 'connect()');
-    assert.equal(f.sources.length, 2);
-    f.focus(false); f.run(page === 'app' ? 'updateNetwork()' : 'connect()');
-    assert.equal(f.sources.length, 2);
+    for (let index = 0; index < 5; index++) f.window.dispatch('online');
+    await f.settle();
+    f.calls.length = 0;
+    await f.tick(15000);
+    assert.equal(f.calls.filter(path => path === '/api/projector/state').length, 5);
+    assert.equal(f.sources.length, 0);
   });
 }
+
+test('one active projector stays within 10,100 background requests over eight hours', async () => {
+  const f = fixture('projector'); await f.settle();
+  for (let minute = 0; minute < 480; minute++) { f.document.dispatch('keydown'); await f.tick(60000); }
+  assert.equal(f.calls.filter(path => path === '/api/projector/state').length, 9601);
+  assert.equal(f.calls.filter(path => path === '/api/draw/eligible-ids').length, 481);
+  assert.equal(f.calls.length, 10082);
+  assert.equal(f.sources.length, 0);
+});
+
+test('main draw polls state once per three seconds and summaries once per minute', async () => {
+  const f = fixture('app'); await f.settle();
+  await f.tick(60000);
+  assert.equal(f.calls.filter(path => path === '/api/projector/state').length, 20);
+  assert.equal(f.calls.filter(path => path === '/stats').length, 1);
+  assert.equal(f.calls.filter(path => path === '/history').length, 1);
+  assert.equal(f.sources.length, 0);
+});
+
+test('scanner views make no background requests even during continuous activity', async () => {
+  const f = fixture('app'); await f.settle();
+  f.run("state.view = 'checkin'");
+  for (let minute = 0; minute < 60; minute++) { f.document.dispatch('keydown'); await f.tick(60000); }
+  assert.equal(f.calls.length, 0);
+});
 
 test('paused projector board rotation cannot recreate uncached prize image requests', async () => {
   const f = fixture('projector'); await f.settle();
@@ -134,10 +158,15 @@ test('a projector draw already submitted finishes and retains its result while p
   let finishDraw;
   const originalFetch = f.context.fetch;
   f.context.fetch = path => path === '/api/draw' ? new Promise(resolve => { finishDraw = resolve; }) : originalFetch(path);
+  f.context.window.EventDeskStorage = {prepareOperation:async () => '11111111-1111-4111-8111-111111111111',
+    current:() => ({uncertain:false, offline:false}), beginRequest:() => 1, markUncertain() {},
+    completeOperation:async () => true, update() {}};
   f.run('renderView = () => {};');
   const draw = f.run("drawProjectorPrize({id:'reward'})");
+  await f.settle();
   f.focus(false);
-  finishDraw({ok:true, json:async () => ({winner:{name:'Saved winner'}})});
+  finishDraw({ok:true, status:200, headers:{get:name => name === 'Content-Type' ? 'application/json' : null},
+    json:async () => ({winner:{name:'Saved winner'}})});
   await draw;
   assert.equal(f.node('projectorMessage').textContent, 'Draw started');
   assert.equal(f.run('projectorDrawing'), false);
