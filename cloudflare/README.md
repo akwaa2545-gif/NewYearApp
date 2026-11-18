@@ -14,7 +14,7 @@ Pages entry -> Python Worker -> ASSETS KV (static files)
 
 [pages-entry.mjs](pages-entry.mjs) forwards requests through the `EVENTDESK` service binding. [worker.py](worker.py) is the Python entry point and exports the `EventDesk` Durable Object class. The application uses the object instance named `main`; retain its namespace and identity across releases.
 
-In SQL mode, event business transactions use native SQL Server tables through the same authenticated PhotoPilot API used for photos. The original Cloudflare SQLite database is retained as a best-effort mirror and durable recovery queue. SQLOnlinePrimary keeps SQL operations available when SQLite access fails; backup maintenance is throttled to 60 seconds and storage-failure probes to 300 seconds. Explicit SQLite mode keeps the original local handler path inside synchronous Durable Object transactions. The standalone `app.py` server remains separate.
+In SQL mode, event business transactions use native SQL Server tables through the same authenticated PhotoPilot API used for photos. The original Cloudflare SQLite database is retained as a best-effort mirror and durable recovery queue. SQLOnlinePrimary keeps SQL operations available when SQLite access fails; backup maintenance runs only after SQL data changes, throttled to 60 seconds, with storage-failure probes paused for 300 seconds. Explicit SQLite mode keeps the original local handler path inside synchronous Durable Object transactions. The standalone `app.py` server remains separate.
 
 | Module | Responsibility |
 | --- | --- |

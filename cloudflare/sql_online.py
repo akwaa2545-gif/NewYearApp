@@ -214,9 +214,9 @@ class SQLOnlinePrimary(SQLPrimary):
         method, path = envelope['method'], envelope['path'].split('?', 1)[0]
         if path == '/api/scan/checkin' and len(envelope.get('body_base64', '')) > 4 * ((MAX_CHECKIN_BODY + 2) // 3):
             return _failure('The check-in request is too large.', 413)
-        due = time.monotonic() >= self.maintenance_at and time.monotonic() >= self.storage_retry_at
-        if due:
-            self.maintenance_at = time.monotonic() + self.MAINTENANCE_SECONDS
+        # This coordinator owns local queue changes. Once discovered, its cached
+        # metadata stays valid until a write, recovery, or storage failure.
+        if not self.queue_known:
             self._discover()
         tracked = method == 'POST' and path not in READ_POSTS
         saved = next((item for item in self.cached_queue
@@ -260,7 +260,12 @@ class SQLOnlinePrimary(SQLPrimary):
                                           if item['operation_id'] != envelope['operation_id'])
                 self.backup_current = False
                 self.cached_state = {**self.cached_state, 'ready': False}
+        # Ordinary SQL replies report the authoritative head without replica I/O.
+        # Elapsed time alone is never a reason to inspect or rewrite SQLite.
+        due = (not self.backup_current and time.monotonic() >= self.maintenance_at
+               and time.monotonic() >= self.storage_retry_at)
         if due or self.recovery_refresh:
+            self.maintenance_at = time.monotonic() + self.MAINTENANCE_SECONDS
             await self._maintain(envelope)
             self.recovery_refresh = False
         response = self._decorate(_captured(result), 'sql')
@@ -269,7 +274,15 @@ class SQLOnlinePrimary(SQLPrimary):
         return response
 
     async def bootstrap(self):
-        revision = await super().bootstrap()
+        try:
+            revision = await super().bootstrap()
+        except Exception:
+            # Snapshot refresh may have invalidated SQLite before failing. The
+            # next request must rediscover it even if SQL's head is unchanged.
+            self.cached_state = None
+            self.queue_known = False
+            self.backup_current = False
+            raise
         self.latest_revision = revision
         self._discover()
         return revision

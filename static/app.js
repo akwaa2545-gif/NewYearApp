@@ -2,6 +2,50 @@
 
 const $ = (id) => document.getElementById(id);
 const state = {csrf:null, profile:null, view:'home', workspaces:{}, wheelTurn:0, drawing:false, prizeImageUploading:false, keyBuffer:'', keyAt:0, projectorSource:null, adminChecked:null, adminDrawCount:null, adminLoading:false, adminRefreshPending:false, adminEmployeeOperation:null, adminAttendanceOperation:null, adminDrawOperation:null, adminDialog:null, attendancePage:1, attendanceRequestId:0, wristbandPerson:null, wristbandRequestId:0, wristbandLoading:false, wristbandSaving:false, wristbandOperation:null};
+let appActivity = null, appPollTimer = null, appRefreshInFlight = false;
+
+function appBackgroundAllowed() { return appActivity?.isActive() === true; }
+
+function pauseAppBackground() {
+  clearInterval(appPollTimer); appPollTimer = null;
+  state.projectorSource?.close(); state.projectorSource = null;
+  if (state.view === 'draw') {
+    $('projectorLiveDot').classList.remove('online');
+    $('projectorPhase').textContent = 'Paused · Tap to reconnect';
+  }
+}
+
+async function refreshAppBackground(resuming = false) {
+  if (!appBackgroundAllowed() || !state.profile || appRefreshInFlight) return;
+  if (['checkin','verify','wristband'].includes(state.view)) return;
+  appRefreshInFlight = true;
+  try {
+    if (state.view === 'admin') await refreshAdmin();
+    else if (state.view === 'attendance') await loadAttendance(true);
+    else {
+      const requests = [refreshStats()];
+      if (state.view === 'draw') {
+        requests.push(loadWinnerHistory());
+        if (resuming) requests.push(loadProjectorState());
+      }
+      await Promise.allSettled(requests);
+    }
+  } catch (_) { /* Keep the last view until the next active refresh. */ }
+  finally { appRefreshInFlight = false; }
+}
+
+function startAppBackground() {
+  if (appActivity || !window.EventDeskActivity) return;
+  appActivity = window.EventDeskActivity.create();
+  const resume = (refresh) => {
+    if (!appBackgroundAllowed()) return;
+    if (appPollTimer === null) appPollTimer = setInterval(refreshAppBackground, 15000);
+    if (state.view === 'draw') connectProjectorState();
+    if (refresh) refreshAppBackground(true);
+  };
+  appActivity.subscribe(active => { if (active) resume(true); else pauseAppBackground(); });
+  if (appBackgroundAllowed()) resume(false); else pauseAppBackground();
+}
 
 function updateDrawAvailability() {
   const button = $('spinButton');
@@ -445,7 +489,8 @@ async function refreshAdmin() {
     state.adminLoading = false;
     if (state.adminRefreshPending) {
       state.adminRefreshPending = false;
-      if (state.profile?.role === 'admin' && state.view === 'admin') refreshAdmin().catch(() => {});
+      if (state.profile?.role === 'admin' && state.view === 'admin'
+          && (!appActivity || appBackgroundAllowed())) refreshAdmin().catch(() => {});
     }
   }
 }
@@ -883,6 +928,7 @@ function renderPerson(workspace, person) {
 }
 
 async function findEmployee(workspace, lookup) {
+  appActivity?.touch();
   if (workspace.reviewPending || workspace.lookupPending || workspace.actionPending) return null;
   if (workspace.checkedPreview && workspace.lookup &&
       ((lookup.code && lookup.code === workspace.lookup.code) ||
@@ -1397,8 +1443,9 @@ async function removePrizeImage() {
 
 function renderProjectorState(payload) {
   const phase = payload.phase || 'waiting';
-  $('projectorPhase').textContent = projectorLabels[phase] || 'Connected';
-  $('projectorLiveDot').classList.toggle('online', true);
+  const connected = !appActivity || appBackgroundAllowed();
+  $('projectorPhase').textContent = connected ? projectorLabels[phase] || 'Connected' : 'Paused · Tap to reconnect';
+  $('projectorLiveDot').classList.toggle('online', connected);
   const details = [];
   if (payload.prize) details.push(payload.prize);
   if (payload.round_name) details.push(payload.round_name);
@@ -1415,14 +1462,18 @@ async function loadProjectorState() {
 }
 
 function connectProjectorState() {
-  if (state.projectorSource || !window.EventSource) return;
+  if (!appBackgroundAllowed() || state.view !== 'draw' || !window.EventSource) return;
+  if (state.projectorSource && state.projectorSource.readyState !== 2) return;
+  state.projectorSource?.close();
   const source = new EventSource('/api/projector/events', {withCredentials:true});
   state.projectorSource = source;
   source.addEventListener('draw-state', event => {
+    if (state.projectorSource !== source || !appBackgroundAllowed()) return;
     try { renderProjectorState(JSON.parse(event.data)); } catch (_) {}
   });
-  source.onopen = () => $('projectorLiveDot').classList.add('online');
+  source.onopen = () => { if (state.projectorSource === source && appBackgroundAllowed()) $('projectorLiveDot').classList.add('online'); };
   source.onerror = () => {
+    if (state.projectorSource !== source || !appBackgroundAllowed()) { source.close(); return; }
     $('projectorLiveDot').classList.remove('online');
     $('projectorPhase').textContent = 'Reconnecting';
     if (state.projectorSource !== source) source.close();
@@ -1504,6 +1555,7 @@ function captureScanner(event) {
 function updateNetwork() {
   $('networkState').textContent = navigator.onLine ? 'Online' : 'Offline';
   $('networkState').classList.toggle('offline', !navigator.onLine);
+  if (navigator.onLine) connectProjectorState();
 }
 
 async function initialize() {
@@ -1564,16 +1616,7 @@ async function initialize() {
     if (profile.authenticated) showApp(profile);
     else showApp(await api('/api/staff-session', {method:'POST', data:{}}));
   } catch (error) { showLogin(error.message); }
-  setInterval(() => {
-    if (!state.profile || document.hidden) return;
-    if (['checkin','verify','wristband'].includes(state.view)) return;
-    if (state.view === 'admin') refreshAdmin().catch(() => {});
-    else if (state.view === 'attendance') loadAttendance(true);
-    else {
-      refreshStats().catch(() => {});
-      if (state.view === 'draw') loadWinnerHistory().catch(() => {});
-    }
-  }, 15000);
+  startAppBackground();
 }
 
 initialize();

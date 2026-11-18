@@ -11,6 +11,43 @@ let refreshInFlight = false, lastRenderedSequence = -1, lastRenderedPhase = -1;
 let projectorCsrf = '', projectorDrawing = false, currentPhase = 'waiting', pendingPrize = null;
 let currentView = 'overview', latestState = null, selectedPrizeId = null;
 let wheelIds = [], wheelIdOffset = 0, wheelIdsLoading = false;
+let projectorActivity = null, projectorReady = false, statePollTimer = null, wheelPollTimer = null;
+
+function projectorBackgroundAllowed() { return projectorReady && projectorActivity?.isActive() === true; }
+
+function pauseProjectorBackground() {
+  clearInterval(statePollTimer); statePollTimer = null;
+  clearInterval(wheelPollTimer); wheelPollTimer = null;
+  stream?.close(); stream = null;
+  if (projectorReady) setConnection('offline', 'Paused · Tap to reconnect');
+}
+
+async function refreshProjectorState() {
+  if (!projectorBackgroundAllowed() || refreshInFlight) return;
+  refreshInFlight = true;
+  try { await loadState(); } catch (_) { /* Retain the last display while reconnecting. */ }
+  finally { refreshInFlight = false; }
+}
+
+function refreshProjectorBackground() {
+  if (!projectorBackgroundAllowed()) return;
+  refreshProjectorState(); loadWheelIds(); connect();
+}
+
+function startProjectorBackground() {
+  if (projectorActivity || !window.EventDeskActivity) return;
+  projectorActivity = window.EventDeskActivity.create();
+  const resume = (refresh) => {
+    if (!projectorActivity.isActive()) return;
+    if (statePollTimer === null) statePollTimer = setInterval(refreshProjectorState, 3000);
+    if (wheelPollTimer === null) wheelPollTimer = setInterval(() => {
+      if (projectorBackgroundAllowed()) loadWheelIds();
+    }, 15000);
+    if (refresh) refreshProjectorBackground();
+  };
+  projectorActivity.subscribe(active => { if (active) resume(true); else pauseProjectorBackground(); });
+  if (projectorActivity.isActive()) resume(false); else pauseProjectorBackground();
+}
 const phaseOrder = {waiting:0, preparing:1, spinning:2, winner_selected:3, winner_announced:4, ready_for_next:5};
 const shortRewardNames = [
   [/Yamaha Grand Filano/i, 'Grand Filano 2026'],
@@ -245,6 +282,7 @@ function renderView() {
   byId('prizePrevious').disabled = busy; byId('prizeNext').disabled = busy; byId('showRewards').disabled = busy;
 }
 async function drawProjectorPrize(prize) {
+  projectorActivity?.touch();
   if (projectorDrawing || !prize) return;
   projectorDrawing = true; renderView(); text('projectorMessage', 'Starting draw…');
   try {
@@ -278,12 +316,25 @@ async function loadState() {
   const state = await response.json(); render(state); return state;
 }
 function connect() {
-  stream?.close(); stream = new EventSource('/api/projector/events', {withCredentials: true});
-  stream.addEventListener('open', () => setConnection('online', 'Live'));
-  stream.addEventListener('draw-state', event => { setConnection('online', 'Live'); try { render(JSON.parse(event.data)); } catch (_) {} });
-  stream.onerror = () => { setConnection('offline', 'Reconnecting'); loadState().catch(() => {}); };
+  if (!projectorBackgroundAllowed() || !window.EventSource) return;
+  if (stream && stream.readyState !== 2) return;
+  stream?.close();
+  const source = new EventSource('/api/projector/events', {withCredentials: true});
+  stream = source;
+  source.addEventListener('open', () => {
+    if (stream === source && projectorBackgroundAllowed()) setConnection('online', 'Live');
+  });
+  source.addEventListener('draw-state', event => {
+    if (stream !== source || !projectorBackgroundAllowed()) return;
+    setConnection('online', 'Live'); try { render(JSON.parse(event.data)); } catch (_) {}
+  });
+  source.onerror = () => {
+    if (stream !== source || !projectorBackgroundAllowed()) { source.close(); return; }
+    setConnection('offline', 'Reconnecting'); refreshProjectorState();
+  };
 }
 async function initialize() {
+  startProjectorBackground();
   byId('winnerSoundPlayer').addEventListener('load', () => {
     winnerSoundReady = true;
     if (soundEnabled && byId('winnerStage').hidden) primeWinnerSound();
@@ -295,7 +346,11 @@ async function initialize() {
       byId('presentation').hidden = true; byId('accessScreen').hidden = false; return;
     }
     projectorCsrf = me.csrf;
-    await loadState(); await loadWheelIds(); connect();
+    // Bootstrap the display once even if automatic connections cannot be started.
+    await loadState(); await loadWheelIds();
+    projectorReady = true;
+    if (projectorBackgroundAllowed()) connect();
+    else setConnection('offline', 'Paused · Tap to reconnect');
   } catch (_) { setConnection('offline', 'Disconnected'); }
 }
 byId('soundToggle').addEventListener('click', async () => {
@@ -316,16 +371,14 @@ byId('boardNext').addEventListener('click', () => { boardPage += 1; renderPrizeB
 byId('prizePrevious').addEventListener('click', () => { const index = boardPrizes.findIndex(item => item.id === selectedPrizeId); if (index <= 0) { currentView = 'overview'; renderView(); } else openPrize(boardPrizes[index - 1].id); });
 byId('prizeNext').addEventListener('click', () => { const index = boardPrizes.findIndex(item => item.id === selectedPrizeId); if (index < boardPrizes.length - 1) openPrize(boardPrizes[index + 1].id); });
 document.addEventListener('fullscreenchange', () => text('fullscreenToggle', document.fullscreenElement ? 'Exit full screen' : 'Full screen'));
-window.addEventListener('online', () => { setConnection('connecting', 'Connecting'); connect(); });
-window.addEventListener('offline', () => setConnection('offline', 'Offline'));
-window.addEventListener('beforeunload', () => { stopWinnerSound(); stream?.close(); });
-setInterval(() => { if (boardPrizes.length) { boardWinnerIndex += 1; renderPrizeBoard(); } }, 8000);
+window.addEventListener('online', () => {
+  if (projectorBackgroundAllowed()) { setConnection('connecting', 'Connecting'); connect(); }
+});
+window.addEventListener('offline', () => {
+  if (projectorBackgroundAllowed()) setConnection('offline', 'Offline');
+});
+window.addEventListener('beforeunload', () => { stopWinnerSound(); pauseProjectorBackground(); });
+// Rebuilding prize images triggers requests because the image endpoint is not cached.
+setInterval(() => { if (projectorBackgroundAllowed() && boardPrizes.length) { boardWinnerIndex += 1; renderPrizeBoard(); } }, 8000);
 setInterval(() => { if (wheelIds.length > 12 && !['spinning','winner_selected'].includes(currentPhase)) { wheelIdOffset = (wheelIdOffset + 12) % wheelIds.length; renderWheelIds(); } }, 3000);
-setInterval(() => { if (!document.hidden) loadWheelIds(); }, 15000);
-setInterval(async () => {
-  if (refreshInFlight || !byId('accessScreen').hidden) return;
-  refreshInFlight = true;
-  try { await loadState(); } catch (_) { /* The live stream continues reconnecting. */ }
-  finally { refreshInFlight = false; }
-}, 3000);
 initialize();

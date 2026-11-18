@@ -80,8 +80,9 @@ and SQL connection settings are not returned to the browser.
    an identity with different request content returns a conflict.
 6. The coordinator validates the SQL result and returns the application response
    with independent SQL, backup, and queue status. Best-effort maintenance
-   requests replication separately, normally at most once per 60 seconds under
-   traffic. SQLite access failures start a 300-second retry cooldown.
+   requests replication separately only when the SQL revision proves the saved
+   copy is behind, normally at most once per 60 seconds under traffic. SQLite
+   access failures start a 300-second retry cooldown.
 
 A validated SQL result remains authoritative even if a subsequent mirror
 refresh fails. The app does not turn a known successful draw into an unknown
@@ -91,6 +92,25 @@ Backup updates are request-driven and can lag roughly 60 seconds under normal
 traffic, or longer during quota exhaustion or API trouble. A ready last-good
 copy can still serve an outage, but may lack new employees, recent attendance,
 or the latest settings. There is no guarantee of an immediately current backup.
+
+### Unchanged data and idle pages
+
+After initial metadata discovery, repeated SQL requests with an unchanged
+revision do not read or write SQLite and do not send a maintenance request.
+Changed revisions trigger the existing throttled sync. Initial seeding,
+failed-backup retries, and queued-check-in recovery remain necessary exceptions;
+there is no independent timer or scheduled backup job. SQL session activity can
+also change a revision, so stopping idle requests avoids those updates too.
+
+Both staff and projector pages stop automatic polling and close their event
+streams when hidden, unfocused, or inactive for two minutes. Key presses,
+barcode input, taps, or returning focus resume updates with one immediate
+refresh. Submitted mutations and their results are not cancelled. Automatic
+projector prize-image refreshes pause as well.
+
+An unattended visible projector also pauses after two minutes and keeps its
+last display. It shows **Paused · Tap to reconnect**; interact with it before
+expecting later draw changes to appear.
 
 ## What works when the API is unavailable
 

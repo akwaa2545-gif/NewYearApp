@@ -6,9 +6,11 @@ An event check-in app with QR scanning, employee lookup, attendance, prize draws
 
 During a SQL API outage, a verified Cloudflare copy can serve saved data and queue check-ins. The UI shows **Saved offline** until SQL accepts them. Prize draws and other conflicting changes pause. This requires working access to Cloudflare and available quota; it is not browser-only offline storage. See [the SQL failover guide](cloudflare/SQL_FAILOVER.md).
 
-Backup maintenance normally runs at most once per 60 seconds under traffic; storage failures pause backup probes for 300 seconds. The saved copy can lag or become unavailable. If the API and SQLite quota are both unavailable, new offline check-ins cannot be saved. Other Workers Free limits still apply.
+Backup maintenance runs only after SQL data changes, at most once per 60 seconds under traffic; storage failures pause backup probes for 300 seconds. The saved copy can lag or become unavailable. If the API and SQLite quota are both unavailable, new offline check-ins cannot be saved. Other Workers Free limits still apply.
 
 The scanner uses html5-qrcode and jsQR. Employee details appear in a popup; successful check-in shows a green animation. Employees who already checked in have an information-only popup. The interface supports reduced motion.
+
+Staff and projector pages pause automatic requests when hidden, unfocused, or inactive for two minutes. Returning focus, typing, or tapping resumes updates. An unattended projector keeps its last display and shows **Paused · Tap to reconnect**.
 
 ## Run locally
 
