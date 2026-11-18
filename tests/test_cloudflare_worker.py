@@ -280,7 +280,7 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
         worker.bind_database = Mock()
         storage = SimpleNamespace(sql=SimpleNamespace(exec=Mock(return_value=[{'value': '1'}])), transactionSync=Mock(side_effect=lambda callback: callback()))
         worker.ctx = SimpleNamespace(storage=storage)
-        worker.env = SimpleNamespace(PUBLIC_ORIGIN='https://eventdesk.example')
+        worker.env = SimpleNamespace(EVENT_STORAGE='sqlite', PUBLIC_ORIGIN='https://eventdesk.example')
         result = {'body': b'not authorized', 'status': 401, 'headers': [('WWW-Authenticate', 'Basic realm="staff"'), ('Set-Cookie', 'one=1'), ('Set-Cookie', 'two=2')]}
         with patch.object(self.worker, 'dispatch', return_value=result), \
                 patch.object(self.worker.app, 'get_stats', self.worker.app.get_stats):

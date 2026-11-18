@@ -298,6 +298,8 @@ internal static class PhotoApiTests
 
     private static void TestConcurrencyAndShutdown()
     {
+        int previousWorkers, previousIo; ThreadPool.GetMinThreads(out previousWorkers, out previousIo);
+        Check(ThreadPool.SetMinThreads(Math.Max(64, previousWorkers), previousIo), "Test pool can hold all blocked fixture calls");
         FakeRepository repository = new FakeRepository();
         repository.BlockReads = true;
         int port = FreePort();
@@ -305,7 +307,7 @@ internal static class PhotoApiTests
         server.Start();
         List<Thread> clients = new List<Thread>();
         List<int> statuses = new List<int>();
-        for (int index = 0; index < 8; index++)
+        for (int index = 0; index < 32; index++)
         {
             Thread thread = new Thread(delegate()
             {
@@ -318,18 +320,19 @@ internal static class PhotoApiTests
         }
         try
         {
-            Check(repository.AllEntered.WaitOne(5000), "Eight concurrent requests enter bounded workers");
-            Check(Request(port, "/healthz", "GET", "Bearer " + Token).Status == 503, "Ninth concurrent request rejected promptly");
+            Check(repository.AllEntered.WaitOne(5000), "Thirty-two concurrent requests fill bounded HTTP workers");
+            Check(Request(port, "/healthz", "GET", "Bearer " + Token).Status == 503, "Thirty-third concurrent request rejected promptly");
             Check(Request(port, "/healthz", "GET", null).Status == 401, "Authentication remains mandatory while saturated");
-            Check(repository.PeakReads == 8, "Repository concurrency limited to eight");
+            Check(repository.PeakReads == 32, "HTTP worker concurrency remains bounded at thirty-two");
         }
         finally
         {
             repository.ReleaseReads.Set();
             foreach (Thread thread in clients) Check(thread.Join(10000), "Request worker completes");
             server.Dispose();
+            ThreadPool.SetMinThreads(previousWorkers, previousIo);
         }
-        Check(statuses.Count == 8 && statuses.TrueForAll(delegate(int value) { return value == 200; }), "Accepted requests finish successfully");
+        Check(statuses.Count == 32 && statuses.TrueForAll(delegate(int value) { return value == 200; }), "Accepted requests finish successfully");
         bool closed = false;
         try { Request(port, "/healthz", "GET", "Bearer " + Token); }
         catch (WebException) { closed = true; }
@@ -436,7 +439,7 @@ internal static class PhotoApiTests
         if (method == "POST") request.ContentLength = 0;
         request.Timeout = 10000;
         request.KeepAlive = false;
-        request.ServicePoint.ConnectionLimit = 32;
+        request.ServicePoint.ConnectionLimit = 64;
         if (authorization != null) request.Headers["Authorization"] = authorization;
         HttpWebResponse response;
         try { response = (HttpWebResponse)request.GetResponse(); }
@@ -514,7 +517,7 @@ internal static class PhotoApiTests
                 int previous;
                 do { previous = PeakReads; if (previous >= count) break; }
                 while (Interlocked.CompareExchange(ref PeakReads, count, previous) != previous);
-                if (count == 8) AllEntered.Set();
+                if (count == 32) AllEntered.Set();
                 ReleaseReads.WaitOne(10000);
                 Interlocked.Decrement(ref active);
             }

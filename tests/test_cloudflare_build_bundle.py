@@ -23,8 +23,15 @@ class BuildBundleTests(unittest.TestCase):
         (self.root / 'app.py').write_text('RUNTIME = True\n', encoding='utf-8')
         (self.root / 'cloudflare' / 'worker.py').write_text('ENTRYPOINT = True\n', encoding='utf-8')
         for name in ('__init__.py', 'crypto_compat.py', 'handler_adapter.py',
-                     'hosted_storage.py', 'qr_image.py', 'sqlite_adapter.py'):
+                     'hosted_storage.py', 'qr_image.py', 'sqlite_adapter.py',
+                     'event_primary.py', 'event_runtime.py', 'event_policy.py', 'replica.py', 'sql_online.py'):
             (self.root / 'cloudflare' / name).write_text('RUNTIME_ADAPTER = True\n', encoding='utf-8')
+        metadata = self.root / 'eventdesk_storage'
+        metadata.mkdir()
+        (metadata / '__init__.py').write_text('METADATA_ONLY = True\n')
+        (metadata / 'schema.py').write_text('TABLES = {}\n')
+        (metadata / 'table_catalog.json').write_text('{}')
+        (metadata / 'connection.py').write_text('PRIVATE_SQL_DRIVER = True\n')
         (self.root / 'static' / 'index.html').write_text('<h1>Public app</h1>', encoding='utf-8')
         self.picture = bytes(range(256)) * ((CHUNK_BYTES // 256) + 2)
         (self.root / 'static' / 'assets' / 'photo.png').write_bytes(self.picture)
@@ -42,11 +49,11 @@ class BuildBundleTests(unittest.TestCase):
         return build_bundle(self.root, self.output, self.packages)
 
     def test_modules_and_vendor_exclude_private_state_and_native_libraries(self):
-        private_marker = 'private-file-content-marker'
-        (self.root / 'data' / 'config.json').write_text(private_marker)
-        (self.root / 'data' / 'employees.json').write_text(private_marker)
-        (self.root / 'data' / 'local-credentials.txt').write_text(private_marker)
-        (self.root / 'cloudflare' / 'credentials.py').write_text(private_marker)
+        secret = 'private-employee-and-password-marker'
+        (self.root / 'data' / 'config.json').write_text(secret)
+        (self.root / 'data' / 'employees.json').write_text(secret)
+        (self.root / 'data' / 'local-credentials.txt').write_text(secret)
+        (self.root / 'cloudflare' / 'credentials.py').write_text(secret)
         result = self.build()
         self.assertEqual(set(result['modules']), {'worker.py', 'app.py', 'vendor.zip'})
         self.assertEqual((self.output / 'worker.py').read_text(), 'ENTRYPOINT = True\n')
@@ -57,10 +64,14 @@ class BuildBundleTests(unittest.TestCase):
             self.assertIn('qrcode/__init__.py', names)
             self.assertIn('openpyxl/__init__.py', names)
             self.assertIn('et_xmlfile/__init__.py', names)
-            self.assertTrue(all(name.endswith('.py') for name in names))
+            self.assertTrue(all(name.endswith('.py') or name == 'eventdesk_storage/table_catalog.json' for name in names))
             self.assertNotIn('cloudflare/worker.py', names)
             self.assertNotIn('cloudflare/credentials.py', names)
-            self.assertFalse(any(private_marker.encode() in archive.read(name) for name in names))
+            self.assertIn('cloudflare/event_runtime.py', names)
+            self.assertIn('cloudflare/sql_online.py', names)
+            self.assertIn('eventdesk_storage/table_catalog.json', names)
+            self.assertNotIn('eventdesk_storage/connection.py', names)
+            self.assertFalse(any(secret.encode() in archive.read(name) for name in names))
 
     def test_asset_chunks_reconstruct_public_binary_and_use_cloudflare_keys(self):
         result = self.build()

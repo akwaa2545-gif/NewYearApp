@@ -19,6 +19,7 @@ CHUNK_BYTES = 512 * 1024
 RUNTIME_FILES = (
     '__init__.py', 'crypto_compat.py', 'handler_adapter.py', 'hosted_storage.py',
     'qr_image.py', 'sqlite_adapter.py',
+    'event_primary.py', 'event_runtime.py', 'event_policy.py', 'replica.py', 'sql_online.py',
 )
 PACKAGES = ('qrcode', 'openpyxl', 'et_xmlfile')
 
@@ -46,6 +47,9 @@ def _write_vendor(root, output, package_roots):
     entries = {}
     for name in RUNTIME_FILES:
         entries['cloudflare/' + name] = root / 'cloudflare' / name
+    # The Worker needs fixed table metadata, never ODBC or SQL Server drivers.
+    for name in ('__init__.py', 'schema.py', 'table_catalog.json'):
+        entries['eventdesk_storage/' + name] = root / 'eventdesk_storage' / name
     for package in PACKAGES:
         folder = Path(package_roots[package]).resolve()
         for file in _safe_files(folder, '*.py'):

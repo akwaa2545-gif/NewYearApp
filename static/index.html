@@ -11,6 +11,8 @@
   <script defer src="/static/qr-detail-scanner.js"></script>
   <script defer src="/static/wristband-support.js"></script>
   <script defer src="/static/employee-portrait.js"></script>
+  <script defer src="/static/storage-status.js"></script>
+  <script defer src="/static/activity.js"></script>
   <script defer src="/static/app.js"></script>
 </head>
 <body data-view="home">
@@ -40,6 +42,7 @@
       <div class="header-center"><span class="live-dot"></span><span id="eventName">EventDesk</span></div>
       <div class="header-actions"><span id="networkState" class="network">Online</span><span id="staffName" class="staff-name">Event Staff</span><button id="adminLoginButton" class="icon-button" type="button" hidden="">Admin</button><button id="headerBackButton" class="icon-button" type="button" data-view="home">Home</button><button id="logoutButton" class="icon-button" type="button" title="Leave admin" aria-label="Leave admin" hidden="">Leave admin</button></div>
     </header>
+    <p id="storageStatus" class="storage-status" role="status" aria-live="polite" aria-atomic="true" hidden></p>
     <main>
       <section id="view-home" class="view active">
         <div class="home-hero"><div class="event-summary"><strong id="totalCount" aria-label="Employee count">—</strong></div></div>

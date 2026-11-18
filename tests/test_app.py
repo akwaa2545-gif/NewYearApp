@@ -21,6 +21,7 @@ import zipfile
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import app
 from scripts.convert_excel_to_json import convert
+from tests.temp_directory_cleanup import cleanup_test_directory
 
 
 def workbook_bytes(data_headers, data_rows, lucky_headers=None, lucky_rows=None):
@@ -60,7 +61,7 @@ class BusinessRulesTests(unittest.TestCase):
 
     def tearDown(self):
         app.DB_PATH = self.original
-        self.temp.cleanup()
+        cleanup_test_directory(self.temp)
 
     def test_remove_prize_archives_unused_prize_but_preserves_winner(self):
         unused = app.save_prize({'name': 'Unused test prize', 'quantity': 1}, 'admin')
@@ -351,7 +352,7 @@ class UpgradeAcceptanceTests(unittest.TestCase):
 
     def tearDown(self):
         app.DB_PATH = self.original
-        self.temp.cleanup()
+        cleanup_test_directory(self.temp)
 
     def active_token(self, employee_id):
         with app.db_connection() as db:
@@ -781,7 +782,7 @@ class APITests(unittest.TestCase):
         cls.server.server_close()
         cls.thread.join(timeout=5)
         app.DB_PATH = cls.old
-        cls.temp.cleanup()
+        cleanup_test_directory(cls.temp)
 
     def session(self):
         return build_opener(HTTPCookieProcessor(http.cookiejar.CookieJar()))

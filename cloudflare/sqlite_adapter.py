@@ -277,6 +277,8 @@ class SQLiteConnection:
             raise error_type(message) from exc
 
     def _store_value(self, value):
+        if isinstance(value, bool):
+            return int(value)
         if not isinstance(value, (bytes, bytearray, memoryview)):
             return value
         value = bytes(value)

@@ -66,6 +66,30 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(row['NAME'], 'Ada')
         self.assertEqual(row[:1], (1,))
 
+    def test_boolean_bindings_cross_the_js_sql_boundary_as_integer_flags(self):
+        from unittest.mock import Mock
+        original = self.sql.exec
+        self.sql.exec = Mock(side_effect=original)
+        self.connection.execute('INSERT INTO people (name) VALUES (?)', (True,))
+        insert = next(call for call in self.sql.exec.call_args_list if call.args[0].startswith('INSERT INTO people'))
+        self.assertIs(type(insert.args[1]), int)
+        self.assertEqual(insert.args[1], 1)
+
+    def test_large_outbox_payload_roundtrips_and_is_reclaimed_in_hosted_sql(self):
+        from cloudflare.replica import ReplicaStore
+        store = ReplicaStore(self.connection, {'people': {'columns': ('id', 'name', 'picture'),
+            'primary_key': ('id',), 'foreign_keys': [], 'column_info': [{'name': 'picture', 'type': 'BLOB'}]}})
+        store.initialize()
+        payload = {'operation_id': 'large-upload', 'method': 'POST', 'path': '/api/rewards/draft',
+                   'body_base64': 'A' * (3 * 1024 * 1024)}
+        store.enqueue(payload, 'uncertain', {'status': 503})
+        self.assertEqual(store.find('large-upload')['envelope'], payload)
+        self.assertGreater(self.sql.database.execute('SELECT COUNT(*) FROM _eventdesk_outbox_payloads').fetchone()[0], 1)
+        self.assertEqual(self.sql.database.execute("SELECT COUNT(*) FROM sqlite_master WHERE name='_eventdesk_blobs'").fetchone()[0], 0)
+        store.acknowledge('large-upload')
+        self.assertFalse(store.has_pending())
+        self.assertEqual(self.sql.database.execute('SELECT COUNT(*) FROM _eventdesk_outbox_payloads').fetchone()[0], 0)
+
     def test_fetch_and_iteration_advance_one_cursor(self):
         self.connection.executemany('INSERT INTO people (name) VALUES (?)', [('Ada',), ('Grace',), ('Linus',)])
         cursor = self.connection.execute('SELECT name FROM people ORDER BY id')

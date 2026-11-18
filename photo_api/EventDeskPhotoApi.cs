@@ -346,13 +346,14 @@ namespace EventDesk.PhotoApi
     {
         public const int MaxPhotoBytes = 256 * 1024;
         private readonly HttpListener listener = new HttpListener();
-        private readonly SemaphoreSlim workers = new SemaphoreSlim(8, 8);
+        private readonly SemaphoreSlim workers = new SemaphoreSlim(32, 32);
         private readonly ManualResetEventSlim drained = new ManualResetEventSlim(true);
         private readonly object lifecycle = new object();
         private readonly string token;
         private readonly IPhotoRepository repository;
         private readonly ISafeLog log;
         private readonly Func<HttpListenerRequest, bool> isLoopbackRequest;
+        private readonly EventApiProxy eventProxy;
         private Thread acceptThread;
         private int active;
         private volatile bool stopping;
@@ -364,13 +365,24 @@ namespace EventDesk.PhotoApi
 
         internal PhotoHttpServer(int port, string apiToken, IPhotoRepository photoRepository, ISafeLog safeLog,
             Func<HttpListenerRequest, bool> transportCheck)
+            : this(port, apiToken, photoRepository, safeLog, transportCheck, new EventApiProxy(new HttpEventApiTransport(apiToken), safeLog))
+        { }
+
+        public PhotoHttpServer(int port, string apiToken, IPhotoRepository photoRepository, ISafeLog safeLog, EventApiProxy proxy)
+            : this(port, apiToken, photoRepository, safeLog,
+                delegate(HttpListenerRequest request) { return IsLoopbackTransport(request.RemoteEndPoint, request.LocalEndPoint); }, proxy)
+        { }
+
+        private PhotoHttpServer(int port, string apiToken, IPhotoRepository photoRepository, ISafeLog safeLog,
+            Func<HttpListenerRequest, bool> transportCheck, EventApiProxy proxy)
         {
-            if (port < 1 || port > 65535 || !ConfigStore.ValidToken(apiToken) || photoRepository == null || safeLog == null || transportCheck == null)
+            if (port < 1 || port > 65535 || !ConfigStore.ValidToken(apiToken) || photoRepository == null || safeLog == null || transportCheck == null || proxy == null)
                 throw new ArgumentException("Invalid server configuration.");
             token = apiToken;
             repository = photoRepository;
             log = safeLog;
             isLoopbackRequest = transportCheck;
+            eventProxy = proxy;
             listener.Prefixes.Add("http://127.0.0.1:" + port.ToString(CultureInfo.InvariantCulture) + "/");
             listener.IgnoreWriteExceptions = true;
         }
@@ -463,6 +475,7 @@ namespace EventDesk.PhotoApi
 
         private void Handle(HttpListenerContext context)
         {
+            if (EventApiProxy.IsRoute(context.Request.RawUrl)) { eventProxy.Handle(context); return; }
             string method = context.Request.HttpMethod;
             if (method != "GET" && method != "HEAD")
             {
@@ -564,7 +577,7 @@ namespace EventDesk.PhotoApi
                 thread = acceptThread;
             }
             if (thread != null && thread != Thread.CurrentThread) thread.Join(5000);
-            drained.Wait(15000);
+            drained.Wait(35000);
         }
     }
 
@@ -575,7 +588,7 @@ namespace EventDesk.PhotoApi
         protected override void OnStart(string[] args) { server = Program.CreateServer(); server.Start(); }
         protected override void OnStop()
         {
-            try { if (server != null) RequestAdditionalTime(25000); }
+            try { if (server != null) RequestAdditionalTime(45000); }
             finally { StopServer(); }
         }
         protected override void OnShutdown() { StopServer(); base.OnShutdown(); }

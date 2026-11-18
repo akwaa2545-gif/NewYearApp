@@ -93,11 +93,18 @@ class HandlerAdapterTests(unittest.TestCase):
         self.assertEqual(response['body'], content)
         self.assertEqual(self.request('GET', '/static/fonts/../app.py')['status'], 404)
 
+
     def test_missing_optional_static_asset_returns_not_found(self):
         with TemporaryDirectory() as folder, patch.object(app, 'FRONTEND', Path(folder)):
             response = self.request('GET', '/static/fonts/fc-pride.otf')
         self.assertEqual(response['status'], 404)
         self.assertNotIn(b'Traceback', response['body'])
+
+
+    def test_storage_status_helper_is_served_with_the_scanner(self):
+        response = self.request('GET', '/static/storage-status.js')
+        self.assertEqual(response['status'], 200)
+        self.assertIn(b'EventDeskStorage', response['body'])
 
     def test_session_cookie_preserves_secure_httponly_and_samesite_attributes(self):
         response = self.request('POST', '/api/login', {'password': self.admin_password})

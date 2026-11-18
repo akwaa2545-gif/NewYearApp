@@ -3,15 +3,53 @@
 const byId = id => document.getElementById(id);
 if (new URLSearchParams(location.search).get('visual') === 'childhood') document.body.dataset.visual = 'childhood';
 const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
-let stream = null, activeSequence = -1, wheelAnimation = null, audioContext = null;
+let activeSequence = -1, wheelAnimation = null, audioContext = null;
 let soundEnabled = localStorage.getItem('eventdesk-projector-sound') === 'on';
 let winnerSoundReady = false, winnerSoundPlaying = false;
 let boardPrizes = [], boardPage = 0, boardWinnerIndex = 0, boardSelected = '';
 let refreshInFlight = false, lastRenderedSequence = -1, lastRenderedPhase = -1;
-let lastStateAt = 0;
+let boardSignature = '', boardCards = [], lastRenderedSignature = '';
 let projectorCsrf = '', projectorDrawing = false, currentPhase = 'waiting', pendingPrize = null;
 let currentView = 'overview', latestState = null, selectedPrizeId = null;
-let wheelIds = [], wheelIdOffset = 0, wheelIdsLoading = false;
+let wheelIds = [], wheelIdOffset = 0, wheelIdsLoading = false, wheelIdsRefreshPending = false;
+let projectorActivity = null, projectorReady = false, statePollTimer = null, wheelPollTimer = null;
+
+function projectorBackgroundAllowed() { return projectorReady && projectorActivity?.isActive() === true; }
+
+function pauseProjectorBackground() {
+  clearInterval(statePollTimer); statePollTimer = null;
+  clearInterval(wheelPollTimer); wheelPollTimer = null;
+  if (projectorReady) setConnection('offline', 'Paused · Tap to reconnect');
+}
+
+async function refreshProjectorState() {
+  if (!projectorBackgroundAllowed() || refreshInFlight) return;
+  void window.EventDeskStorage?.confirmBackup?.(true);
+  refreshInFlight = true;
+  try { await loadState(); }
+  catch (_) { if (projectorBackgroundAllowed()) setConnection('offline', 'Reconnecting'); }
+  finally { refreshInFlight = false; }
+}
+
+function refreshProjectorBackground() {
+  if (!projectorBackgroundAllowed()) return;
+  refreshProjectorState(); loadWheelIds();
+}
+
+function startProjectorBackground() {
+  if (projectorActivity || !window.EventDeskActivity) return;
+  projectorActivity = window.EventDeskActivity.create();
+  const resume = (refresh) => {
+    if (!projectorActivity.isActive()) return;
+    if (statePollTimer === null) statePollTimer = setInterval(refreshProjectorState, 3000);
+    if (wheelPollTimer === null) wheelPollTimer = setInterval(() => {
+      if (projectorBackgroundAllowed()) loadWheelIds();
+    }, 60000);
+    if (refresh) refreshProjectorBackground();
+  };
+  projectorActivity.subscribe(active => { if (active) resume(true); else pauseProjectorBackground(); });
+  if (projectorActivity.isActive()) resume(false); else pauseProjectorBackground();
+}
 const phaseOrder = {waiting:0, preparing:1, spinning:2, winner_selected:3, winner_announced:4, ready_for_next:5};
 const shortRewardNames = [
   [/Yamaha Grand Filano/i, 'Grand Filano 2026'],
@@ -50,7 +88,17 @@ async function loadWheelIds() {
     if (wheelIds.length) wheelIdOffset %= wheelIds.length; else wheelIdOffset = 0;
     renderWheelIds();
   } catch (_) { /* Keep the most recent preview while reconnecting. */ }
-  finally { wheelIdsLoading = false; }
+  finally {
+    wheelIdsLoading = false;
+    const refresh = wheelIdsRefreshPending; wheelIdsRefreshPending = false;
+    if (refresh && projectorBackgroundAllowed()) loadWheelIds();
+  }
+}
+
+function refreshChangedWheelIds() {
+  if (!projectorBackgroundAllowed()) return;
+  if (wheelIdsLoading) wheelIdsRefreshPending = true;
+  else loadWheelIds();
 }
 function phaseCopy(phase) {
   return ({
@@ -183,25 +231,12 @@ function renderPrizeImage(state) {
   byId('drawStage').classList.toggle('has-prize-image', Boolean(url));
   byId('winnerStage').classList.toggle('has-prize-image', Boolean(url));
 }
-function renderPrizeBoard() {
-  const board = byId('prizeBoard');
-  const host = byId('prizeBoardRows');
-  const count = boardPrizes.length;
-  board.hidden = currentView !== 'overview';
-  byId('presentation').classList.remove('has-prize-board');
-  if (!count) { host.replaceChildren(); text('overviewMessage', 'No rewards yet'); return; }
-  text('overviewMessage', '');
-  const pages = Math.max(1, Math.ceil(count / 10));
-  boardPage %= pages;
-  text('prizeBoardPage', pages > 1 ? `${boardPage + 1} / ${pages}` : '');
-  host.replaceChildren();
-  const pagePrizes = boardPrizes.slice(boardPage * 10, boardPage * 10 + 10);
-  pagePrizes.forEach((prize, index) => {
+function createRewardCard(prize, index) {
     const row = document.createElement('button'); row.type = 'button'; row.className = 'reward-card';
     row.title = prize.name;
     if (/Yamaha Grand Filano/i.test(prize.name)) row.classList.add('reward-card--scooter');
     if (/LG.*Refrigerator/i.test(prize.name)) row.classList.add('reward-card--fridge');
-    row.disabled = projectorDrawing || ['spinning','winner_selected'].includes(currentPhase);
+    row.disabled = projectorDrawing || Boolean(pendingPrize) || ['spinning','winner_selected'].includes(currentPhase);
     row.addEventListener('click', () => openPrize(prize.id));
     const reward = document.createElement('div'); reward.className = 'reward-card-name';
     const name = document.createElement('strong'); name.textContent = projectorRewardName(prize.name);
@@ -212,18 +247,43 @@ function renderPrizeBoard() {
     else row.classList.add('text-only');
     reward.append(name, progress);
     const winner = document.createElement('div'); winner.className = 'reward-card-winner';
-    const person = prize.winners[boardWinnerIndex % prize.winners.length];
-    winner.textContent = person ? [person.name, person.employee_id, person.department].filter(Boolean).join(' · ') : '';
     row.append(number);
     if (prize.has_image) row.append(visual);
     row.append(reward);
-    if (person) row.append(winner);
-    host.append(row);
+    row.append(winner);
+    return {row, winner};
+}
+
+function renderPrizeBoard() {
+  const board = byId('prizeBoard'), host = byId('prizeBoardRows');
+  board.hidden = currentView !== 'overview';
+  byId('presentation').classList.remove('has-prize-board');
+  if (!boardPrizes.length) {
+    host.replaceChildren(); boardCards = []; boardSignature = '';
+    text('overviewMessage', 'No rewards yet'); return;
+  }
+  text('overviewMessage', '');
+  const pages = Math.max(1, Math.ceil(boardPrizes.length / 10));
+  boardPage %= pages;
+  text('prizeBoardPage', pages > 1 ? `${boardPage + 1} / ${pages}` : '');
+  const pagePrizes = boardPrizes.slice(boardPage * 10, boardPage * 10 + 10);
+  const signature = JSON.stringify({page:boardPage, sequence:lastRenderedSequence, prizes:pagePrizes});
+  if (signature !== boardSignature) {
+    boardCards = pagePrizes.map(createRewardCard);
+    host.replaceChildren(...boardCards.map(card => card.row));
+    boardSignature = signature;
+  }
+  pagePrizes.forEach((prize, index) => {
+    const card = boardCards[index], person = prize.winners[boardWinnerIndex % prize.winners.length];
+    card.row.disabled = projectorDrawing || Boolean(pendingPrize) || ['spinning','winner_selected'].includes(currentPhase);
+    card.winner.hidden = !person;
+    card.winner.style.display = person ? '' : 'none';
+    card.winner.textContent = person ? [person.name, person.employee_id, person.department].filter(Boolean).join(' · ') : '';
   });
   byId('boardPrevious').hidden = pages <= 1; byId('boardNext').hidden = pages <= 1;
 }
 function openPrize(id) {
-  if (projectorDrawing || ['spinning','winner_selected'].includes(currentPhase)) return;
+  if (projectorDrawing || pendingPrize || ['spinning','winner_selected'].includes(currentPhase)) return;
   selectedPrizeId = id; currentView = 'draw'; text('projectorMessage', ''); renderView();
 }
 function renderView() {
@@ -241,18 +301,57 @@ function renderView() {
   displayState.prize_image_url = selected.has_image ? `/api/rewards/image?id=${encodeURIComponent(selected.id)}&v=${lastRenderedSequence}` : null;
   renderPrizeImage(displayState);
   if (displayState.phase === 'winner_announced' && displayState.winner) showWinner(displayState); else showDraw(displayState);
-  const busy = projectorDrawing || ['spinning','winner_selected'].includes(currentPhase);
-  byId('confirmProjectorDraw').disabled = busy || selected.winners.length >= selected.quantity || !Number(latestState.eligible);
+  const status = window.EventDeskStorage?.current(), retry = Boolean(pendingPrize) || status?.uncertain === true;
+  const busy = projectorDrawing || Boolean(pendingPrize) || ['spinning','winner_selected'].includes(currentPhase);
+  const helperReady = typeof window.EventDeskStorage?.prepareOperation === 'function';
+  byId('confirmProjectorDraw').disabled = !helperReady || projectorDrawing || status?.offline === true
+    || Boolean(pendingPrize && pendingPrize.id !== selected.id)
+    || (!retry && (busy || selected.winners.length >= selected.quantity || !Number(latestState.eligible)));
+  byId('confirmProjectorDraw').textContent = !helperReady ? 'Refresh to draw' : retry ? 'Retry draw' : 'Draw';
   byId('prizePrevious').disabled = busy; byId('prizeNext').disabled = busy; byId('showRewards').disabled = busy;
 }
+
+async function requestProjectorDraw(prize) {
+  const storage = window.EventDeskStorage;
+  if (!storage?.prepareOperation) throw new Error('Refresh this page before drawing.');
+  if (storage.current().offline) throw new Error('Draws are unavailable offline.');
+  const body = JSON.stringify({prize_id:prize.id});
+  const key = JSON.stringify(['/api/draw', 'POST', body, projectorCsrf]);
+  if (pendingPrize && pendingPrize.key !== key) throw new Error('Retry the same prize before drawing another.');
+  const operationId = await storage.prepareOperation(key), observation = storage.beginRequest();
+  const wasUncertain = storage.current().uncertain;
+  pendingPrize = {id:prize.id, key};
+  const uncertain = () => storage.markUncertain(operationId, observation);
+  let response, result;
+  try {
+    response = await fetch('/api/draw', {method:'POST', credentials:'same-origin', body,
+      headers:{'Content-Type':'application/json', 'X-CSRF-Token':projectorCsrf, 'X-EventDesk-Operation-Id':operationId}});
+  } catch (_) { uncertain(); throw new Error('Connection lost. Retry the same prize.'); }
+  try {
+    if (!(response.headers.get('Content-Type') || '').includes('json')) throw new Error('Invalid reply');
+    result = await response.json();
+    if (!result || typeof result !== 'object' || Array.isArray(result)
+        || response.ok && (!result.winner || typeof result.winner !== 'object' || Array.isArray(result.winner))
+        || !response.ok && typeof result.error !== 'string' && typeof result.message !== 'string') throw new Error('Invalid reply');
+  } catch (_) { uncertain(); throw new Error('Cannot read the server reply. Retry the same prize.'); }
+  const receipt = response.headers.get('X-EventDesk-Operation-Resolved');
+  if (receipt && receipt !== operationId) { uncertain(); throw new Error('Cannot confirm the draw. Retry the same prize.'); }
+  if (response.status >= 500) uncertain();
+  const resolved = response.ok || receipt === operationId || response.status >= 400 && response.status < 500 && !wasUncertain;
+  if (resolved && await storage.completeOperation(operationId) !== false) pendingPrize = null;
+  storage.update(response.headers, result, observation);
+  if (!response.ok) throw new Error(result.error || result.message || 'Could not start draw.');
+  return result;
+}
+
 async function drawProjectorPrize(prize) {
+  projectorActivity?.touch();
   if (projectorDrawing || !prize) return;
   projectorDrawing = true; renderView(); text('projectorMessage', 'Starting draw…');
   try {
-    const response = await fetch('/api/draw', {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json', 'X-CSRF-Token':projectorCsrf}, body:JSON.stringify({prize_id:prize.id})});
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error || result.message || 'Could not start draw.');
-    text('projectorMessage', 'Draw started'); await loadState();
+    await requestProjectorDraw(prize);
+    text('projectorMessage', 'Draw started');
+    try { await loadState(); } catch (_) { text('projectorMessage', 'Draw saved. Reconnecting.'); }
   } catch (error) { text('projectorMessage', error.message || 'Connection lost. Check the result first.'); }
   finally { projectorDrawing = false; renderView(); }
 }
@@ -260,6 +359,11 @@ function render(state) {
   const sequence = Number(state.sequence ?? 0);
   const phase = phaseOrder[state.phase] ?? 0;
   if (sequence < lastRenderedSequence || (sequence === lastRenderedSequence && phase < lastRenderedPhase)) return;
+  const {server_time, ...displayState} = state;
+  const signature = JSON.stringify(displayState);
+  if (signature === lastRenderedSignature) { latestState = state; return; }
+  const eligibilityChanged = latestState !== null && Number(latestState.eligible || 0) !== Number(state.eligible || 0);
+  lastRenderedSignature = signature;
   lastRenderedSequence = sequence; lastRenderedPhase = phase;
   const isNewSpin = state.phase === 'spinning' && (currentPhase !== 'spinning' || !latestState || latestState.sequence !== state.sequence);
   currentPhase = state.phase;
@@ -269,22 +373,23 @@ function render(state) {
   document.title = `Projector | ${state.event_name || 'EventDesk'}`;
   boardPrizes = Array.isArray(state.prizes) ? state.prizes : [];
   boardSelected = state.prize || '';
-  if (isNewSpin) { const spinningPrize = boardPrizes.find(prize => prize.name === state.prize); if (spinningPrize) { selectedPrizeId = spinningPrize.id; currentView = 'draw'; } }
+  if (isNewSpin && !pendingPrize) { const spinningPrize = boardPrizes.find(prize => prize.name === state.prize); if (spinningPrize) { selectedPrizeId = spinningPrize.id; currentView = 'draw'; } }
   latestState = state; renderView();
+  if (eligibilityChanged) refreshChangedWheelIds();
 }
 async function loadState() {
+  const observation = window.EventDeskStorage?.beginRequest();
   const response = await fetch('/api/projector/state', {credentials: 'same-origin'});
   if (response.status === 401 || response.status === 403) throw Object.assign(new Error('access'), {status: response.status});
   if (!response.ok) throw new Error('state');
-  const state = await response.json(); render(state); lastStateAt = Date.now(); return state;
-}
-function connect() {
-  stream?.close(); stream = new EventSource('/api/projector/events', {withCredentials: true});
-  stream.addEventListener('open', () => setConnection('online', 'Live'));
-  stream.addEventListener('draw-state', event => { setConnection('online', 'Live'); try { render(JSON.parse(event.data)); lastStateAt = Date.now(); } catch (_) {} });
-  stream.onerror = () => { setConnection('offline', 'Reconnecting'); };
+  const state = await response.json();
+  window.EventDeskStorage?.update(response.headers, state, observation);
+  render(state);
+  if (projectorBackgroundAllowed()) setConnection('online', 'Live');
+  return state;
 }
 async function initialize() {
+  startProjectorBackground();
   byId('winnerSoundPlayer').addEventListener('load', () => {
     winnerSoundReady = true;
     if (soundEnabled && byId('winnerStage').hidden) primeWinnerSound();
@@ -296,7 +401,10 @@ async function initialize() {
       byId('presentation').hidden = true; byId('accessScreen').hidden = false; return;
     }
     projectorCsrf = me.csrf;
-    await loadState(); await loadWheelIds(); connect();
+    // Bootstrap the display once even if automatic connections cannot be started.
+    await loadState(); await loadWheelIds();
+    projectorReady = true;
+    setConnection(projectorBackgroundAllowed() ? 'online' : 'offline', projectorBackgroundAllowed() ? 'Live' : 'Paused · Tap to reconnect');
   } catch (_) { setConnection('offline', 'Disconnected'); }
 }
 byId('soundToggle').addEventListener('click', async () => {
@@ -317,16 +425,15 @@ byId('boardNext').addEventListener('click', () => { boardPage += 1; renderPrizeB
 byId('prizePrevious').addEventListener('click', () => { const index = boardPrizes.findIndex(item => item.id === selectedPrizeId); if (index <= 0) { currentView = 'overview'; renderView(); } else openPrize(boardPrizes[index - 1].id); });
 byId('prizeNext').addEventListener('click', () => { const index = boardPrizes.findIndex(item => item.id === selectedPrizeId); if (index < boardPrizes.length - 1) openPrize(boardPrizes[index + 1].id); });
 document.addEventListener('fullscreenchange', () => text('fullscreenToggle', document.fullscreenElement ? 'Exit full screen' : 'Full screen'));
-window.addEventListener('online', () => { setConnection('connecting', 'Connecting'); connect(); });
-window.addEventListener('offline', () => setConnection('offline', 'Offline'));
-window.addEventListener('beforeunload', () => { stopWinnerSound(); stream?.close(); });
-setInterval(() => { if (boardPrizes.length) { boardWinnerIndex += 1; renderPrizeBoard(); } }, 8000);
+window.addEventListener('online', () => {
+  if (projectorBackgroundAllowed()) { setConnection('connecting', 'Connecting'); refreshProjectorBackground(); }
+});
+window.addEventListener('offline', () => {
+  if (projectorBackgroundAllowed()) setConnection('offline', 'Offline');
+});
+window.addEventListener('beforeunload', () => { stopWinnerSound(); pauseProjectorBackground(); });
+window.EventDeskStorage?.subscribe(() => { if (latestState) renderView(); });
+// Rotate winner labels in existing cards; keep their images attached.
+setInterval(() => { if (projectorBackgroundAllowed() && boardPrizes.length) { boardWinnerIndex += 1; renderPrizeBoard(); } }, 8000);
 setInterval(() => { if (wheelIds.length > 12 && !['spinning','winner_selected'].includes(currentPhase)) { wheelIdOffset = (wheelIdOffset + 12) % wheelIds.length; renderWheelIds(); } }, 3000);
-setInterval(() => { if (!document.hidden) loadWheelIds(); }, 60000);
-setInterval(async () => {
-  if (refreshInFlight || !byId('accessScreen').hidden || Date.now() - lastStateAt < 15000) return;
-  refreshInFlight = true;
-  try { await loadState(); } catch (_) { /* The live stream continues reconnecting. */ }
-  finally { refreshInFlight = false; }
-}, 30000);
 initialize();
