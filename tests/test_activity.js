@@ -64,6 +64,17 @@ test('interaction renews the two-minute deadline; focus and visibility cannot du
 });
 
 for (const page of ['app', 'projector']) {
+  test(`${page} offers backup confirmation only from an active background refresh`, async () => {
+    const f = fixture(page); await f.settle();
+    const confirmations = [];
+    f.window.EventDeskStorage = {confirmBackup:active => {confirmations.push(active); return Promise.resolve(false);}};
+    if (page === 'app') f.run("state.view = 'checkin';");
+    await f.run(page === 'app' ? 'refreshAppBackground()' : 'refreshProjectorState()');
+    assert.deepEqual(confirmations, [true]);
+    f.focus(false);
+    await f.run(page === 'app' ? 'refreshAppBackground()' : 'refreshProjectorState()');
+    assert.deepEqual(confirmations, [true], 'a paused page must not start a confirmation probe');
+  });
   test(`${page} uses polling without SSE and makes no automatic requests while hidden, blurred, or idle`, async () => {
     const f = fixture(page); await f.settle();
     assert.equal(f.sources.length, 0);

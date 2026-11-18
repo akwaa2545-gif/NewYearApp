@@ -135,6 +135,7 @@ internal static class EventApiProxyTests
         Check(!request.AllowAutoRedirect && request.Proxy == null && !request.UseDefaultCredentials && request.Credentials == null, "Transport cannot redirect credentials or use system proxy/default credentials");
         Check(request.Headers["Authorization"] == "Bearer " + ApiToken && request.Headers["Cookie"] == null, "Only backend bearer is attached, without caller cookies");
         Check(request.Timeout == 15000 && request.ReadWriteTimeout == 15000, "Upstream I/O uses remaining total deadline");
+        Check(request.ServicePoint.ConnectionLimit == 16, "Loopback transport permits the bounded event burst capacity");
         request.Abort();
         MethodInfo read = typeof(HttpEventApiTransport).GetMethod("ReadResponse", BindingFlags.NonPublic | BindingFlags.Static);
         byte[] result = (byte[])read.Invoke(null, new object[] { new MemoryStream(Envelope), (long)Envelope.Length });
@@ -152,18 +153,32 @@ internal static class EventApiProxyTests
 
     private static void TestConcurrency()
     {
-        FakeTransport transport = new FakeTransport(); transport.Block = true; RecordingLog log = new RecordingLog(); EventApiProxy proxy = new EventApiProxy(transport, log);
-        Task<EventProxyReply>[] pending = new Task<EventProxyReply>[4];
-        for (int i = 0; i < pending.Length; i++) pending[i] = Task.Factory.StartNew(delegate { return Call(proxy, "/v1/event/request", "POST", "application/json", Envelope, Envelope.Length); });
-        Check(transport.AllEntered.WaitOne(5000), "Four event operations can run together");
+        FakeTransport transport = new FakeTransport(); transport.Block = true; transport.ExpectedBlockedCalls = 16;
+        RecordingLog log = new RecordingLog(); EventApiProxy proxy = new EventApiProxy(transport, log);
+        Task<EventProxyReply>[] pending = new Task<EventProxyReply>[16];
         try
         {
-            Check(Call(proxy, "/v1/event/request", "POST", "application/json", Envelope, Envelope.Length).Status == 503, "Fifth event operation rejected promptly");
+            for (int i = 0; i < 10; i++) pending[i] = StartBlockedEvent(proxy);
+            Check(SpinWait.SpinUntil(delegate { return Interlocked.CompareExchange(ref transport.Calls, 0, 0) == 10; }, 5000),
+                "Ten phones enter event transport without a busy rejection");
+            for (int i = 10; i < pending.Length; i++) pending[i] = StartBlockedEvent(proxy);
+            Check(transport.AllEntered.WaitOne(5000), "Sixteen event operations fill the bounded admission pool");
+            Check(Call(proxy, "/v1/event/request", "POST", "application/json", Envelope, Envelope.Length).Status == 503,
+                "Seventeenth event operation rejected promptly");
             Check(log.Last == "event_busy" && log.Number == 0, "Busy event proxy logs only safe admission diagnostic");
         }
-        finally { transport.Release.Set(); }
-        Task.WaitAll(pending);
+        finally
+        {
+            transport.Release.Set();
+            foreach (Task<EventProxyReply> task in pending) if (task != null) Check(task.Wait(5000), "Accepted event request drains");
+        }
         foreach (Task<EventProxyReply> task in pending) Check(task.Result.Status == 200, "Accepted operation completes");
+    }
+
+    private static Task<EventProxyReply> StartBlockedEvent(EventApiProxy proxy)
+    {
+        return Task.Factory.StartNew(delegate { return Call(proxy, "/v1/event/request", "POST", "application/json", Envelope, Envelope.Length); },
+            CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
     }
 
     private static void TestBackendStatuses()
@@ -249,7 +264,7 @@ internal static class EventApiProxyTests
     private sealed class RecordingLog : ISafeLog { public string Last; public int Number; public void Write(string category, int number) { Last = category; Number = number; } }
     private sealed class FakeTransport : IEventApiTransport
     {
-        public int Calls, Timeout, Delay, Status; public string LastPath; public byte[] LastBody;
+        public int Calls, Timeout, Delay, Status; public int ExpectedBlockedCalls = 4; public string LastPath; public byte[] LastBody;
         public byte[] Response = Encoding.UTF8.GetBytes("{\"ok\":true}"); public bool Throw, Block, Corrupt;
         public readonly ManualResetEvent AllEntered = new ManualResetEvent(false), FirstEntered = new ManualResetEvent(false), Release = new ManualResetEvent(false);
         public byte[] Forward(string path, byte[] json, int timeoutMilliseconds)
@@ -260,7 +275,7 @@ internal static class EventApiProxyTests
             if (Corrupt) throw new InvalidDataException("sensitive backend protocol details");
             if (Status != 0) throw new EventApiStatusException(Status);
             if (Delay > 0) Thread.Sleep(Delay);
-            if (Block) { if (count == 4) AllEntered.Set(); Release.WaitOne(5000); }
+            if (Block) { if (count == ExpectedBlockedCalls) AllEntered.Set(); Release.WaitOne(15000); }
             return Response;
         }
     }

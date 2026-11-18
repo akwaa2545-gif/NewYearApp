@@ -38,6 +38,35 @@ class OnlineTests(unittest.IsolatedAsyncioTestCase):
         result = self.router._decorate({'status': 200, 'headers': [], 'body': b'{}'}, 'sql')
         self.assertNotIn('x-eventdesk-backup-revision', self.headers(result))
 
+    async def test_trusted_failed_checkin_queues_once_without_second_sql_attempt(self):
+        self.online()
+        value = self.request('/api/scan/checkin', 'POST', recorded_at='2026-11-18T00:00:00+00:00')
+        first = await self.router.handle_unavailable_checkin(value)
+        second = await self.router.handle_unavailable_checkin(value)
+        self.assertEqual(first['status'], 202)
+        self.assertEqual(second['status'], 202)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(len(self.store.pending()), 1)
+        self.assertEqual(self.store.pending()[0]['envelope']['recorded_at'], value['recorded_at'])
+
+    async def test_trusted_failed_checkin_rejects_unready_copy_and_other_routes(self):
+        self.online()
+        self.db.execute('UPDATE _eventdesk_replica_meta SET ready=0,seeded=0')
+        self.db.commit()
+        value = self.request('/api/scan/checkin', 'POST', recorded_at='2026-11-18T00:00:00+00:00')
+        self.assertEqual((await self.router.handle_unavailable_checkin(value))['status'], 503)
+        self.assertEqual(self.fallback_calls, [])
+        self.assertEqual((await self.router.handle_unavailable_checkin(self.request('/api/draw', 'POST')))['status'], 400)
+        self.assertEqual(self.calls, [])
+
+    async def test_trusted_failed_checkin_cannot_reuse_an_offline_id_for_changed_body(self):
+        self.online()
+        value = self.request('/api/scan/checkin', 'POST', recorded_at='2026-11-18T00:00:00+00:00')
+        self.assertEqual((await self.router.handle_unavailable_checkin(value))['status'], 202)
+        changed = {**value, 'body_base64': 'e30='}
+        self.assertEqual((await self.router.handle_unavailable_checkin(changed))['status'], 409)
+        self.assertEqual(len(self.store.pending()), 1)
+
     async def test_cold_quota_failure_never_blocks_sql_reads_checkins_or_draws(self):
         for error in (RuntimeError('quota exceeded'), sqlite3.IntegrityError('broken replica')):
             attempts = []

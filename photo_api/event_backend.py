@@ -148,7 +148,75 @@ class EventEngine:
             value = encode_response({'status': 409, 'headers': [('Content-Type', 'application/json')],
                                      'body': b'{"error":"Operation ID already used for a different request."}'})
             return self._response(tx, command, value, receipt_found=True)
-        return self._response(tx, command, receipt['response'], receipt_found=True)
+        response = receipt['response']
+        if command.replay and not command.receipt_only:
+            try:
+                principal = self._replay_principal(command, tx)
+            except ProtocolError:
+                # A committed receipt still resolves the old operation after
+                # session revocation. It never authorizes a new time adjustment.
+                return self._response(tx, command, response, receipt_found=True)
+            response, changed = self._reconcile_replay(tx, command, response, principal, existing=True)
+            if changed or response != receipt['response']:
+                revision = tx.finish(None, None, {})
+                tx._query('UPDATE ' + tx._name('EventOperationReceipt')
+                          + ' SET response_json=?,revision=? WHERE operation_id=?',
+                          (dumps(response).decode(), revision, command.operation_id))
+        return self._response(tx, command, response, receipt_found=True)
+
+    @staticmethod
+    def _utc_time(value):
+        try:
+            stamp = datetime.fromisoformat(value.replace('Z', '+00:00'))
+        except (ValueError, TypeError, AttributeError):
+            raise ProtocolError('Saved check-in time is not valid.') from None
+        if stamp.utcoffset() is None or stamp.utcoffset().total_seconds() != 0:
+            raise ProtocolError('Saved check-in time must be UTC.')
+        return stamp
+
+    def _reconcile_replay(self, tx, command, response, principal, *, existing=False):
+        """A verified offline scan may predate a separately accepted SQL scan."""
+        if response['status'] != 200 or command.path != '/api/scan/checkin':
+            return response, False
+        payload = json.loads(base64.b64decode(response['body_base64']))
+        person = payload.get('person')
+        if not isinstance(person, dict) or type(person.get('id')) is not int:
+            return response, False
+        removed = tx.db.execute('SELECT removed_at FROM attendance_removals WHERE employee_id=?',
+                                (person['id'],)).fetchall()
+        if any(self._utc_time(row['removed_at']) >= self._utc_time(command.recorded_at) for row in removed):
+            if existing:
+                return response, False  # Resolve the old receipt, preserving the administrator's later reset.
+            raise _ApplicationRejected(encode_response({'status': 409,
+                'headers': [('Content-Type', 'application/json')],
+                'body': b'{"error":"This queued check-in was removed by an administrator.","code":"attendance_removed"}'}))
+        row = tx.db.execute('''SELECT e.checked_in_at AS employee_time,c.checked_in_at AS attendance_time
+            FROM employees e JOIN event_checkins c ON c.employee_id=e.id WHERE e.id=?''',
+            (person['id'],)).fetchone()
+        if row is None:
+            return response, False  # A receipt cannot recreate attendance removed by an administrator.
+        times = [row['attendance_time'], row['employee_time'], command.recorded_at]
+        earliest = min((value for value in times if value is not None), key=self._utc_time)
+        changed = row['attendance_time'] != earliest or row['employee_time'] != earliest
+        if changed:
+            self._update_replay_time(tx, command, principal, person['id'], row['attendance_time'], earliest)
+        updated = {**payload, 'person': {**person, 'checked_in_at': earliest}}
+        if isinstance(payload.get('checkin'), dict):
+            updated['checkin'] = {**payload['checkin'], 'checked_in_at': earliest}
+        body = json.dumps(updated, ensure_ascii=False).encode('utf-8')
+        headers = [(name, value) for name, value in response['headers'] if name.lower() != 'content-length']
+        return encode_response({'status': response['status'], 'headers': headers, 'body': body}), changed
+
+    def _update_replay_time(self, tx, command, principal, employee_id, previous, earliest):
+        tx.db.execute('UPDATE event_checkins SET checked_in_at=? WHERE employee_id=?', (earliest, employee_id))
+        tx.db.execute('UPDATE employees SET checked_in_at=? WHERE id=?', (earliest, employee_id))
+        log = tx.db.execute('''SELECT id FROM event_log WHERE employee_id=? AND action='checkin'
+            AND occurred_at=? ORDER BY id DESC LIMIT 1''', (employee_id, previous)).fetchone()
+        if log:
+            tx.db.execute('UPDATE event_log SET occurred_at=? WHERE id=?', (earliest, log['id']))
+        self.app.audit(tx.db, principal, 'attendance.replay_time_reconciled', 'employee', employee_id,
+                       {'previous_checked_in_at': previous, 'checked_in_at': earliest,
+                        'operation_id': command.operation_id})
 
     def handle(self, payload):
         command = parse_command(payload)
@@ -165,14 +233,17 @@ class EventEngine:
                         return existing
                     if command.receipt_only:
                         return self._cancel_or_missing(tx, command, digest)
+                    principal = self._replay_principal(command, tx) if command.replay else None
                     with self._bind(tx, command.recorded_at if command.replay else None):
-                        application = _ReplayApp(self.app, self._replay_principal(command, tx)) if command.replay else self.app
+                        application = _ReplayApp(self.app, principal) if command.replay else self.app
                         result = dispatch(application, command.method, command.path,
                                           [*command.headers, ('Host', self.host)], command.body,
                                           command.client_ip, self.config)
                     response = encode_response(result)
                     if response['status'] >= 400 or tx.db.rollback_requested:
                         raise _ApplicationRejected(response)
+                    if command.replay:
+                        response, _ = self._reconcile_replay(tx, command, response, principal)
                     tx.finish(command.operation_id if command.method == 'POST' else None, digest, response)
                     return self._response(tx, command, response)
             except _ApplicationRejected as rejected:
@@ -312,13 +383,13 @@ def local_photo_fetch(app_module, token, *, connection_factory=HTTPConnection):
 class EventHTTPServer(ThreadingHTTPServer):
     daemon_threads = False
     block_on_close = True
-    request_queue_size = 8
+    request_queue_size = 32
 
     def __init__(self, address, engine, token):
         if address[0] != '127.0.0.1':
             raise ValueError('The event backend must listen on loopback only.')
         self.engine, self.api_token = engine, validate_api_token(token)
-        self._slots = threading.BoundedSemaphore(8)
+        self._slots = threading.BoundedSemaphore(32)
         super().__init__(address, _EventHandler)
 
     def get_request(self):

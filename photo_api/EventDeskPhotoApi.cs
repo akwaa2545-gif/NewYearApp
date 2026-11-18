@@ -346,7 +346,7 @@ namespace EventDesk.PhotoApi
     {
         public const int MaxPhotoBytes = 256 * 1024;
         private readonly HttpListener listener = new HttpListener();
-        private readonly SemaphoreSlim workers = new SemaphoreSlim(8, 8);
+        private readonly SemaphoreSlim workers = new SemaphoreSlim(32, 32);
         private readonly ManualResetEventSlim drained = new ManualResetEventSlim(true);
         private readonly object lifecycle = new object();
         private readonly string token;

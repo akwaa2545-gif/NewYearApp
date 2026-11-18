@@ -24,6 +24,7 @@ function pauseProjectorBackground() {
 
 async function refreshProjectorState() {
   if (!projectorBackgroundAllowed() || refreshInFlight) return;
+  void window.EventDeskStorage?.confirmBackup?.(true);
   refreshInFlight = true;
   try { await loadState(); }
   catch (_) { if (projectorBackgroundAllowed()) setConnection('offline', 'Reconnecting'); }

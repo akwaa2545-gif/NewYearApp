@@ -90,6 +90,95 @@ test('offline status remains until SQL explicitly reports fully synced', () => {
   assert.equal(status.current().offline, false);
 });
 
+test('direct SQL connectivity restores online actions without clearing queued check-ins', () => {
+  const status = helper();
+  status.update(headers({'x-eventdesk-storage':'sqlite','x-eventdesk-sync':'pending',
+    'x-eventdesk-queue':'pending'}), {pending_sync:true});
+  status.update(headers({'x-eventdesk-storage':'sql','x-eventdesk-sync':'online',
+    'x-eventdesk-backup':'unavailable','x-eventdesk-queue':'unknown'}), {});
+  assert.equal(status.current().storage, 'sql');
+  assert.equal(status.current().sync, 'online');
+  assert.equal(status.current().offline, false);
+  assert.equal(status.current().queue, 'pending', 'unknown cannot erase a known queued check-in');
+  assert.equal(status.current().backup, 'unavailable');
+  status.update(headers({'x-eventdesk-storage':'sql','x-eventdesk-sync':'synced',
+    'x-eventdesk-queue':'unknown'}), {});
+  assert.equal(status.current().queue, 'pending');
+  status.update(headers({'x-eventdesk-storage':'sql','x-eventdesk-sync':'synced',
+    'x-eventdesk-queue':'invalid'}), {});
+  assert.equal(status.current().queue, 'pending', 'an invalid queue header is not proof of recovery');
+  status.update(headers({'x-eventdesk-storage':'sql','x-eventdesk-sync':'synced',
+    'x-eventdesk-queue':'clear'}), {});
+  assert.equal(status.current().queue, 'clear');
+});
+
+test('direct SQL status shows pending backup work while enabling the draw button', async () => {
+  const f = fixture([
+    {status:202, headers:{'x-eventdesk-storage':'sqlite','x-eventdesk-sync':'pending',
+      'x-eventdesk-queue':'pending'}, payload:{pending_sync:true}},
+    {status:200, headers:{'x-eventdesk-storage':'sql','x-eventdesk-sync':'online',
+      'x-eventdesk-backup':'unavailable','x-eventdesk-queue':'unknown'}},
+  ]);
+  await f.run("api('/api/scan/checkin', {method:'POST', data:{employee_id:'1234567'}})");
+  assert.equal(f.node('spinButton').disabled, true);
+  await f.run("api('/api/stats')");
+  assert.equal(f.node('spinButton').disabled, false);
+  assert.equal(f.node('storageStatus').hidden, false);
+  assert.match(f.node('storageStatus').textContent, /API connected.*Waiting for backup confirmation/);
+  assert.equal(f.context.window.EventDeskStorage.current().queue, 'pending');
+});
+
+test('SQL online GET cannot resolve an uncertain draw or replace its UUID', async () => {
+  const f = fixture([new Error('lost reply'),
+    {status:200, headers:{'x-eventdesk-storage':'sql','x-eventdesk-sync':'online',
+      'x-eventdesk-queue':'unknown','x-eventdesk-backup':'unavailable'}},
+    {status:200, resolved:true, headers:{'x-eventdesk-storage':'sql','x-eventdesk-sync':'online'}},
+  ]);
+  await assert.rejects(f.run("api('/api/draw', {method:'POST', data:{prize_id:1}})"));
+  const savedId = f.calls[0].options.headers['X-EventDesk-Operation-Id'];
+  await f.run("api('/api/stats')");
+  assert.equal(f.context.window.EventDeskStorage.current().uncertain, true);
+  await assert.rejects(f.run("api('/api/draw', {method:'POST', data:{prize_id:2}})"), /retry the same action/i);
+  assert.equal(f.calls.length, 2);
+  await f.run("api('/api/draw', {method:'POST', data:{prize_id:1}})");
+  assert.equal(f.calls[2].options.headers['X-EventDesk-Operation-Id'], savedId);
+  assert.equal(f.context.window.EventDeskStorage.current().uncertain, false);
+});
+
+test('an older online reply cannot override a newer SQLite fallback', () => {
+  const status = helper();
+  const online = status.beginRequest(), offline = status.beginRequest();
+  status.update(headers({'x-eventdesk-storage':'sqlite','x-eventdesk-sync':'pending',
+    'x-eventdesk-queue':'pending'}), {pending_sync:true}, offline);
+  status.update(headers({'x-eventdesk-storage':'sql','x-eventdesk-sync':'online',
+    'x-eventdesk-queue':'unknown'}), {}, online);
+  assert.equal(status.current().offline, true);
+  assert.equal(status.current().storage, 'sqlite');
+  assert.equal(status.current().queue, 'pending');
+});
+
+test('SQLite fallback stays offline and retains queue state despite an invalid online marker', () => {
+  const status = helper();
+  status.update(headers({'x-eventdesk-storage':'sqlite','x-eventdesk-sync':'pending',
+    'x-eventdesk-queue':'pending'}), {pending_sync:true});
+  status.update(headers({'x-eventdesk-storage':'sqlite','x-eventdesk-sync':'online'}), {});
+  assert.equal(status.current().offline, true);
+  assert.equal(status.current().sync, 'pending');
+  assert.equal(status.current().queue, 'pending');
+});
+
+test('a fresh SQL online reply keeps normal actions available when the coordinator quota is exhausted', async () => {
+  const f = fixture([{status:200, resolved:true, headers:{'x-eventdesk-storage':'sql',
+    'x-eventdesk-sync':'online','x-eventdesk-backup':'unavailable','x-eventdesk-queue':'unknown'}}]);
+  await f.run("api('/api/draw', {method:'POST', data:{prize_id:1}})");
+  const status = f.context.window.EventDeskStorage.current();
+  assert.equal(status.offline, false);
+  assert.equal(status.uncertain, false);
+  assert.equal(status.queue, 'unknown');
+  assert.equal(f.node('spinButton').disabled, false);
+  assert.equal(f.node('storageStatus').textContent, 'API connected · Cloudflare quota limit reached');
+});
+
 test('pending response shows accessible banner and blocks draws until sync completes', async () => {
   const f = fixture([
     {status:202, headers:{'x-eventdesk-storage':'sqlite','x-eventdesk-sync':'pending'}, payload:{pending_sync:true}},

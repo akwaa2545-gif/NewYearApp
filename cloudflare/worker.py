@@ -26,6 +26,8 @@ from cloudflare.event_primary import PrimaryProtocolError, PrimaryUnavailable
 from cloudflare.event_runtime import HostedSQLRuntime, request_envelope, sql_transport, storage_mode
 from cloudflare.event_policy import preflight_mutation
 from cloudflare.read_proxy import OnlineReadProxy, eligible_read
+from cloudflare.direct_api import (DirectAPIProxy, eligible_operation, MAX_POST_BYTES,
+    FALLBACK_STAMP, FALLBACK_PROOF, sign_fallback_stamp, apply_fallback_stamp)
 
 install_crypto()
 import app
@@ -33,6 +35,7 @@ _uncached_stats = app.get_stats
 PHOTO_TIMEOUT_SECONDS = 8
 PHOTO_INFLIGHT_LIMIT = 8
 _online_reads = OnlineReadProxy()
+_online_api = DirectAPIProxy()
 
 
 SECURITY_HEADERS = {
@@ -111,6 +114,16 @@ class Default(WorkerEntrypoint):
             return await self.asset(request, path)
         try:
             mode = storage_mode(self.env)
+            # Explicit, optional recovery confirmation is separate from online work.
+            if request.method == 'GET' and request_path(request) == '/api/me?backup=1':
+                return await self._coordinate(request)
+            direct = (not deployment and mode == 'sql' and eligible_operation(request)
+                      and getattr(self.env, 'EVENT_MAINTENANCE', '0') != '1'
+                      and getattr(self.env, 'EVENT_DIRECT_API', '1') == '1'
+                      and getattr(self.env, 'PHOTO_PILOT', None) is not None
+                      and getattr(self.env, 'APP_CONFIG', None) is not None)
+            if direct:
+                return await self._direct_operation(request)
             optimized = (not deployment and mode == 'sql' and eligible_read(request)
                          and getattr(self.env, 'EVENT_MAINTENANCE', '0') != '1'
                          and getattr(self.env, 'EVENT_DIRECT_READS', '1') == '1'
@@ -124,14 +137,81 @@ class Default(WorkerEntrypoint):
             return result
         except PrimaryProtocolError:
             return json_response({'error': 'The SQL connection needs attention.'}, 503)
+        except PrimaryUnavailable:
+            return json_response({'error': 'The Cloudflare coordinator is unavailable.'}, 503)
         except ValueError as error:
             return json_response({'error': str(error)}, 400)
 
     async def _coordinate(self, request):
+        # Only _fallback_operation may create the signed internal failover headers.
+        if request.headers.get(FALLBACK_STAMP) or request.headers.get(FALLBACK_PROOF):
+            return json_response({'error': 'Invalid internal request headers.'}, 400)
+        return await self._fetch_coordinator(request)
+
+    async def _fetch_coordinator(self, request):
+        if getattr(self.env, 'EVENT_COORDINATOR_DISABLED', '0') == '1':
+            raise PrimaryUnavailable('The optional coordinator is unavailable.')
         fetched = await self.env.STATE.getByName('main').fetch(request)
         # Python fetch wraps Headers as a case-sensitive mapping. Observe the
         # underlying JS response, retaining case-insensitive headers and cookies.
         return getattr(fetched, 'js_response', fetched)
+
+    async def _direct_operation(self, request):
+        try:
+            config = json.loads(self.env.APP_CONFIG)
+            if not isinstance(config, dict) or not re.fullmatch(r'[0-9a-fA-F]{64}', str(config.get('secret', ''))):
+                raise ValueError()
+        except (ValueError, TypeError):
+            raise PrimaryProtocolError('Invalid event signing configuration.') from None
+        envelope = request_envelope(request, b'')
+        if request.method == 'GET':
+            envelope['operation_id'] = None
+        elif request.headers.get('Origin') and request.headers.get('Origin') != self.env.PUBLIC_ORIGIN.rstrip('/'):
+            return json_response({'error': 'This request came from another website.'}, 403)
+        denied = preflight_mutation(envelope, config, self.env.PUBLIC_ORIGIN, app.parse_session)
+        if denied:
+            return json_response({'error': denied[1]}, denied[0])
+        if request.method == 'POST':
+            try:
+                body = await read_body(request, MAX_POST_BYTES)
+            except ValueError:
+                return json_response({'error': 'Request is too large.'}, 413)
+            envelope['body_base64'] = base64.b64encode(body).decode('ascii')
+        envelope['include_replica'] = False
+        schedule = getattr(getattr(self, 'ctx', None), 'waitUntil', None)
+        return await _online_api.handle(envelope, self._direct_transport,
+            lambda value: self._fallback_operation(value, config),
+            lambda value: response(value['body'], value['status'], value['headers']),
+            schedule, self._maintain_backup)
+
+    async def _direct_transport(self, kind, payload):
+        from types import SimpleNamespace
+        js = SimpleNamespace(Headers=Headers, Request=JSRequest, AbortController=AbortController,
+                             Object=Object, to_js=to_js)
+        mutation = payload['method'] == 'POST' and payload['path'] not in ('/api/lookup', '/api/scan/checkin')
+        return await sql_transport(self.env, js, read_body, kind, payload, timeout=32 if mutation else 8)
+
+    def _coordinator_request(self, envelope, *, maintenance=False, config=None):
+        headers = Headers.new()
+        for name, value in envelope['headers']:
+            headers.set(name, value)
+        headers.set('CF-Connecting-IP', envelope['client_ip'])
+        method, path = ('GET', '/api/me') if maintenance else (envelope['method'], envelope['path'])
+        options = {'method': method, 'headers': headers}
+        if not maintenance and method == 'POST':
+            headers.set('X-EventDesk-Operation-Id', envelope['operation_id'])
+            options['body'] = to_js(base64.b64decode(envelope['body_base64'], validate=True))
+            if path == '/api/scan/checkin':
+                headers.set(FALLBACK_STAMP, envelope['recorded_at'])
+                headers.set(FALLBACK_PROOF, sign_fallback_stamp(envelope, config['secret']))
+        return JSRequest.new(self.env.PUBLIC_ORIGIN + path,
+                             to_js(options, dict_converter=Object.fromEntries))
+
+    async def _fallback_operation(self, envelope, config):
+        return await self._fetch_coordinator(self._coordinator_request(envelope, config=config))
+
+    async def _maintain_backup(self, envelope):
+        return await self._coordinate(self._coordinator_request(envelope, maintenance=True))
 
     async def _read_transport(self, kind, payload):
         from types import SimpleNamespace
@@ -355,7 +435,13 @@ class EventDesk(DurableObject):
             except ValueError:
                 return json_response({'error': 'Request is too large.'}, 413)
             envelope['body_base64'] = base64.b64encode(body).decode('ascii')
-            result = await self._get_sql_primary().handle(envelope)
+            secret = self.config.get('secret') if isinstance(self.config, dict) else None
+            envelope = apply_fallback_stamp(envelope, request.headers, secret)
+            primary = self._get_sql_primary()
+            if request.headers.get(FALLBACK_STAMP):
+                result = await primary.handle_unavailable_checkin(envelope)
+            else:
+                result = await primary.handle(envelope)
             return response(result['body'], result['status'], result['headers'])
         except ValueError as error:
             if isinstance(error, PrimaryProtocolError):

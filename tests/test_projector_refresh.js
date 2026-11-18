@@ -162,6 +162,37 @@ test('a synced SQL state re-enables the original draw retry without resolving it
   assert.deepEqual([...f.entries.values()], [savedId], 'GET never completes the pending mutation');
 });
 
+test('direct SQL online state enables the projector retry while retaining a separate pending queue', async () => {
+  const f = fixture();
+  const display = f.state({prizes:[{id:1, name:'Prize one', quantity:1, has_image:false, winners:[]}]});
+  f.render(display); f.run("selectedPrizeId = 1; currentView = 'draw'; renderView();");
+  const posts = drawReplies(f, [new Error('Draw reply lost'), {status:200, resolved:true,
+    headers:{'x-eventdesk-storage':'sql','x-eventdesk-sync':'online','x-eventdesk-queue':'unknown'}}]);
+  await f.run('drawProjectorPrize({id:1})');
+  const savedId = [...f.entries.values()][0];
+  const send = f.context.fetch;
+  f.context.window.EventDeskStorage.update({get:name => ({'x-eventdesk-storage':'sqlite',
+    'x-eventdesk-sync':'pending','x-eventdesk-queue':'pending'})[name.toLowerCase()] ?? null}, {});
+  assert.equal(f.node('confirmProjectorDraw').disabled, true);
+  f.context.fetch = (path, options) => options?.method === 'POST' ? send(path, options) : Promise.resolve({
+    ok:true, status:200, headers:{get:name => ({'x-eventdesk-storage':'sql',
+      'x-eventdesk-sync':'online','x-eventdesk-queue':'unknown',
+      'x-eventdesk-backup':'unavailable'})[name.toLowerCase()] ?? null}, json:async () => display});
+  await f.run('loadState()');
+  const status = f.context.window.EventDeskStorage.current();
+  assert.equal(status.offline, false);
+  assert.equal(status.queue, 'pending');
+  assert.equal(status.uncertain, true);
+  assert.equal(f.node('confirmProjectorDraw').disabled, false);
+  assert.equal(f.node('confirmProjectorDraw').textContent, 'Retry draw');
+  assert.deepEqual([...f.entries.values()], [savedId]);
+  await f.run('drawProjectorPrize({id:1})');
+  assert.equal(posts.length, 2);
+  assert.equal(posts[0].options.headers['X-EventDesk-Operation-Id'], posts[1].options.headers['X-EventDesk-Operation-Id']);
+  assert.equal(f.context.window.EventDeskStorage.current().uncertain, false);
+  assert.equal(f.context.window.EventDeskStorage.current().queue, 'pending', 'one confirmed draw cannot clear a separate outbox');
+});
+
 test('an invalid success reply and unconfirmed server failure retain the draw UUID', async () => {
   for (const reply of [{status:200, type:'text/html'}, {status:503, payload:{error:'Offline'}}, {status:200, payload:{}}]) {
     const f = fixture(); drawReplies(f, [reply]);

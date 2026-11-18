@@ -8,12 +8,12 @@ outage copy and durable recovery queue. SQL requests can continue when that
 database reaches its quota. Other Cloudflare limits still apply. The local
 standalone Python app continues to support SQLite independently.
 
-The quota-tolerant runtime was deployed and live-tested on 2026-11-17.
-Cloudflare reported an exhausted storage write quota while SQL sign-in,
-check-in, exact UUID retry, a fresh duplicate scan, lookup, and logout succeeded.
-The synthetic employee was removed and original SQL counts were restored.
-The offline backup remains unavailable until its quota recovers; current
-outage/replay behavior has local regression coverage. Earlier live outage
+The direct SQL runtime was deployed and live-tested on 2026-11-18. Ten isolated
+device sessions checked in synthetic employees while coordinator access was
+disabled. A separate API outage test saved a check-in in SQLite, then recovered
+exactly one SQL attendance record with its original timestamp. Backup access
+and both API services were restored, and all synthetic employees were removed.
+These were simulated device sessions, not ten physical phones. Earlier live
 checks below describe their dated releases.
 
 Examples use placeholders. Keep deployment addresses, connection settings,
@@ -25,8 +25,8 @@ employee records, exported databases, and access tokens outside source control.
 flowchart TD
     Browser[Browser: staff and admin UI] --> Pages[Cloudflare Pages]
     Pages --> Worker[EventDesk Worker]
-    Worker -->|Writes, larger reads and fallback| Coordinator[EventDesk Durable Object coordinator]
-    Worker -->|Selected small online reads| Gateway
+    Worker -->|Optional backup, outage fallback and larger administration routes| Coordinator[EventDesk Durable Object coordinator]
+    Worker -->|Online check-in, draw, lookup and supporting requests| Gateway
     Coordinator --> Gateway[Existing PhotoPilot gateway]
     Gateway --> Tunnel[Existing private tunnel / VPC service]
     Tunnel --> Photo[C# PhotoPilot listener: loopback 8765]
@@ -46,25 +46,35 @@ and SQL connection settings are not returned to the browser.
 
 ### Reducing usage while retaining the Pages address
 
-The Pages address remains the public entry point. Selected small, online GET
-requests can use the same private SQL API directly from the outer Worker,
-without invoking the Durable Object. SQL still checks the current account,
-session and role. This is a server-side route; browsers never receive API bearer
-tokens or SQL credentials. Larger responses and every POST retain the existing
-coordinator path, including lookup, sign-in, check-in and draws.
+The Pages address remains the public entry point. Normal check-in and draw
+operations use the private SQL API directly from the outer Worker. The direct
+routes include sign-in and staff-session creation, logout, lookup, check-in,
+verification, draws and rerolls, projector state, the small supporting GETs,
+employee portraits and prize images. SQL still checks the current account,
+session and role. Browsers never receive API bearer tokens or SQL credentials.
+Larger administration/import/export routes retain the coordinator path.
 
-Under traffic, the outer Worker periodically sends a read through the coordinator
-to maintain the saved copy and recover queued work. Its gate is per isolate;
-the coordinator's own maintenance throttle still controls backup writes.
-Transport unavailability can use the original coordinator fallback. Invalid
-protocol replies or rejected service credentials cannot bypass checks through
-SQLite. Online reads do not resolve uncertain mutations or prove an empty queue.
+Healthy core requests do not wait for the Durable Object. A confirmed SQL result
+returns first; optional, request-driven background GETs maintain the saved copy
+and recover queued work. They are throttled to once per minute per isolate, with
+a five-minute cooldown after backup failure. The coordinator's own maintenance
+throttle still controls backup writes. A successful mutation is never sent to
+the coordinator a second time for backup.
 
-This reduces Durable Object requests and avoids repeated backup access. It does
-not remove the Workers daily request limit: the Pages API still needs a Worker.
-There is no guarantee that all features remain available after every Cloudflare
-free-tier limit is exhausted. SQL remains primary, and the original Cloudflare
-SQLite copy and outbox remain available subject to their own quotas.
+Transport unavailability can use the existing SQLite fallback for reads,
+sign-in and check-in. An uncertain draw remains SQL-only and must retry its
+original UUID. Invalid protocol replies or rejected service credentials fail
+closed. The direct API flag `EVENT_DIRECT_API=0` restores the previous routing.
+`EVENT_COORDINATOR_DISABLED=1` is an operator-controlled outage-test switch;
+it disables coordinator access while leaving healthy direct SQL routes usable.
+Neither flag is controlled by browser request headers.
+
+Durable Object request, duration or storage exhaustion therefore cannot block a
+healthy online check-in or draw. The backup cannot accept or replay work while
+its own quota is exhausted. Workers request/CPU limits still apply because the
+Pages API needs a Worker. SQL remains primary, and the original Cloudflare
+SQLite copy and outbox remain available subject to their own quotas. Queued
+employees become eligible for SQL draws only after SQL accepts their attendance.
 
 ## Source map
 
@@ -72,6 +82,7 @@ SQLite copy and outbox remain available subject to their own quotas.
 | --- | --- |
 | [worker.py](worker.py) | Hosted routing, maintenance gate, and atomic SQLite fallback dispatch |
 | [read_proxy.py](read_proxy.py) | Small SQL reads without Durable Object invocations, conservative status, and per-isolate coordinator probes |
+| [direct_api.py](direct_api.py) | Active SQL-first core routing, independent backup scheduling, and signed check-in failover |
 | [event_runtime.py](event_runtime.py) | Fixed service transport, request envelopes, response validation, and SQLite transaction boundary |
 | [sql_online.py](sql_online.py) | Active `SQLOnlinePrimary`: SQL requests independent of backup availability, throttled maintenance, and recovery |
 | [event_primary.py](event_primary.py) | Retained `SQLPrimary` implementation and shared protocol/recovery helpers |
@@ -92,18 +103,19 @@ SQLite copy and outbox remain available subject to their own quotas.
    another action. Browser persistence limits are described below.
 2. The Worker checks the request envelope and signed mutation claims. The SQL
    backend still performs authoritative application authorization.
-3. The active coordinator sends ordinary SQL requests with
-   `include_replica: false`. It does not require a SQLite intent or mirror write
-   before sending a mutation. If a known queue is accessible, it reconciles that
-   work before a conflicting write.
+3. The outer Worker sends ordinary core SQL requests with
+   `include_replica: false`. They require no Durable Object request, SQLite
+   intent, mirror write or queue inspection. Supporting backup work is separate;
+   a queue that cannot be inspected is not described as empty.
 4. The request travels through the existing gateway and C# listener to Python.
    The backend executes the original [app.py](../app.py) rules in a serializable
    SQL transaction protected by an application lock.
 5. Business changes, the operation receipt, and revisioned replication changes
    commit together. A repeated operation returns its recorded response. Reusing
    an identity with different request content returns a conflict.
-6. The coordinator validates the SQL result and returns the application response
-   with independent SQL, backup, and queue status. Best-effort maintenance
+6. The Worker validates the SQL result and returns the application response
+   with independent SQL, backup, and queue status. Only the matching confirmed
+   POST result resolves that operation UUID. Best-effort maintenance
    requests replication separately only when the SQL revision proves the saved
    copy is behind, normally at most once per 60 seconds under traffic. SQLite
    access failures start a 300-second retry cooldown.
@@ -119,8 +131,10 @@ or the latest settings. There is no guarantee of an immediately current backup.
 
 ### Unchanged data and idle pages
 
-After initial metadata discovery, repeated SQL requests with an unchanged
-revision do not read or write SQLite and do not send a maintenance request.
+After initial metadata discovery, coordinator checks with an unchanged SQL
+revision skip SQLite mirror I/O and replication downloads. The outer Worker
+still schedules a throttled background verification GET under traffic, even
+when its last known revision is unchanged, to discover work from other isolates.
 Changed revisions trigger the existing throttled sync. Initial seeding,
 failed-backup retries, and queued-check-in recovery remain necessary exceptions;
 there is no independent timer or scheduled backup job. SQL session activity can
@@ -135,7 +149,8 @@ projector prize-image refreshes pause as well.
 The browser uses polling rather than combining finite SSE reconnections with
 polling. Projector state keeps a short refresh interval during active use;
 home, administration, attendance, draw summaries and eligible-ID lists refresh
-less often. Scan pages have no periodic background requests. User actions still
+less often. Scan pages have no regular data polling; a known pending queue can
+trigger the optional active-page confirmation described below. User actions still
 refresh their results immediately. Stable prize cards and image elements are
 reused instead of rebuilding the board on every unchanged state response.
 
@@ -224,8 +239,9 @@ sequenceDiagram
 ```
 
 Requests drive queue discovery and backup maintenance; there is no independent
-background synchronization daemon. Accessible, known queued work is resolved
-before conflicting writes. The default coordinator processes up to 20 queued
+background synchronization daemon. Coordinator requests reconcile accessible,
+known queued work before their conflicting writes. Direct SQL operations do not
+wait for an inaccessible coordinator. The default coordinator processes up to 20 queued
 entries per recovery pass, in insertion order. If SQLite cannot be inspected,
 the queue is reported as `unknown` and ordinary SQL operations can continue.
 That status does not prove an empty queue. Offline attendance is absent from
@@ -235,6 +251,15 @@ For a queued check-in, the backend checks its receipt first. If it already
 committed, the original result is returned. Otherwise the backend can replay
 the check-in using the recorded time. Repeated scanning and lost responses do
 not create another attendance row.
+
+A fresh direct SQL scan can arrive before an older queued offline scan. A fully
+authorized replay reconciles the earliest verified UTC time into the existing
+attendance record, employee timestamp and matching check-in log, with an audit
+entry. That change and the response receipt commit atomically. It does not
+replace newer wristband decisions. A later administrator attendance reset
+prevents old replay from recreating or backdating the new attendance generation.
+An already committed matching receipt remains resolvable after session
+revocation, but cannot authorize a new timestamp adjustment.
 
 SQLite and SQL can allocate different internal row IDs for that check-in.
 Acknowledging a queued check-in also marks the saved copy as needing a refresh.
@@ -253,12 +278,22 @@ captured when the original check-in request arrived. Waiting for an unavailable
 API does not change that time. The fallback temporarily binds this clock only
 while dispatching that check-in, then restores the normal clock even on errors.
 
-An uncertain draw or administrative mutation is never blindly replayed. The
-coordinator requests its receipt only. If no receipt exists, SQL records a
+The edge tries a check-in or lookup for up to eight seconds. A failed check-in
+carries its original envelope time to the coordinator through an HMAC proof
+bound to the operation, body and authentication headers. The coordinator checks
+the proof and its short freshness window, then saves the fallback without a
+second SQL timeout. Browser-supplied internal proofs cannot choose an attendance
+time. Draw writes keep their longer response budget and remain SQL-only.
+
+An uncertain direct SQL draw retains its UUID in the browser. Retry that same
+operation against SQL to obtain its receipt or execute it once; optional backup
+maintenance cannot resolve a browser-only pending operation. Never generate a
+new draw identity to guess whether the original already succeeded.
+
+For legacy or coordinator-held uncertain draw/administrative intents, automatic
+recovery requests the receipt only. If no receipt exists, SQL records a
 cancellation tombstone under the same transaction lock. A late original
-delivery then returns that cancellation instead of executing a second action.
-A deliberate retry of the same pending operation can retain its original UUID;
-do not generate a new draw identity to guess whether it already succeeded.
+delivery then returns that cancellation instead of executing another action.
 
 The coordinator does not apply SQL changes over remaining unsynchronized
 local check-ins. After resolving an accessible queue, best-effort maintenance
@@ -280,7 +315,8 @@ fallback is not rejected merely because its session row does not yet exist in
 SQL, provided the proof and required claims are valid.
 
 An application-level check-in rejection marks its outbox entry `conflict`.
-An accessible conflict pauses further business mutations for staff review.
+An accessible conflict pauses coordinator-backed business mutations for staff
+review. Healthy direct SQL core operations remain independent of that queue.
 Authorization or protocol rejection also blocks automatic recovery; it must not
 be cleared by silently deleting the queued operation.
 
@@ -337,6 +373,7 @@ outer service envelope does not grant application permissions.
 | Private response envelope | 24 MiB |
 | Coordinator snapshot assembly | 16 MiB |
 | Check-in body accepted for offline routing | 16 KiB |
+| Direct lookup/check-in transport deadline | 8 seconds before eligible fallback |
 | Outbox capacity | 10,000 intents |
 | Recovery pass | Up to 20 entries |
 | Gateway/C# event deadline | 30 seconds |
@@ -350,15 +387,30 @@ normalizes JavaScript-null optional headers before validation.
 Browser-visible headers include:
 
 - `X-EventDesk-Storage: sql` or `sqlite`.
-- `X-EventDesk-Sync: synced` or `pending`.
+- `X-EventDesk-Sync: online`, `synced`, or `pending`.
 - `X-EventDesk-Backup: current`, `stale`, or `unavailable`.
 - `X-EventDesk-Queue: clear`, `pending`, or `unknown`.
 
-SQL/`synced` means the current SQL operation was confirmed; it does not certify
+SQL/`online` confirms API connectivity without certifying the old outbox.
+Matching operation-resolution headers confirm only that POST. SQL/`synced`
+comes from coordinator work; it does not certify
 the backup or prove the recovery queue is empty. `current` means the saved
 revision matches the SQL revision known to this coordinator. `stale` means the
 copy is behind or not ready; `unavailable` means local access failed. A healthy
 SQL request can succeed with an unavailable backup and an unknown queue.
+
+The browser tracks API availability separately from the backup queue, so online
+SQL draws stay enabled while backup confirmation is pending. During existing
+active background cycles, a client with a known pending queue can request
+`GET /api/me?backup=1` at most once per minute. This optional request uses the
+coordinator and requires fresh SQL + synced + clear headers before clearing the
+queue warning. Failure cannot disable healthy SQL actions or resolve an
+uncertain UUID. It pauses with the page and stops after confirmation.
+
+Normal exact employee lookup uses one joined employee/wristband/exception query
+instead of three queries. Token lookup uses one instead of two. The employee
+state is never cached across scans; leading-zero ambiguity and inactive-token
+checks remain in place, and portraits load asynchronously.
 
 An ordinary healthy read, unrelated action, or late photo must not clear an
 uncertain mutation. The browser resolves only the exact operation identity;
@@ -377,8 +429,10 @@ resolve an unknown outcome before starting a replacement action.
 
 | Binding | Meaning |
 | --- | --- |
-| `EVENT_STORAGE=sql` | Default hosted coordinator path |
+| `EVENT_STORAGE=sql` | Default hosted SQL mode with direct core routes |
 | `EVENT_STORAGE=sqlite` | Explicit original path for a controlled rollback |
+| `EVENT_DIRECT_API=1` | Default SQL-first core routes; `0` restores the previous read optimization |
+| `EVENT_COORDINATOR_DISABLED=0` | Normal backup access; `1` disables coordinator access for a controlled test |
 | `EVENT_MAINTENANCE=1` | Reject hosted `/api` traffic before database work |
 | `PHOTO_PILOT` | Existing private gateway service binding |
 | `PHOTO_PILOT_ACCESS_TOKEN` | Secret used to authenticate that service request |
@@ -444,6 +498,31 @@ permissions, maintenance, protected packages, and the frozen source export.
 
 ## Verification
 
+The 2026-11-18 release passed these controlled live checks:
+
+- With coordinator access disabled, ten isolated cookie sessions issued forty
+  scan requests for ten tagged employees. SQL contained exactly ten attendance
+  records; exact UUID retries and new duplicate scans preserved their times.
+- Sign-in, employee lookup, employee portraits and all eight configured prize
+  images worked through direct SQL routes. SQL rejected an invalid draw and an
+  invalid projector transition as expected. No live winning draw was performed;
+  successful draw transactions and duplicate protection have automated coverage.
+- With backup access restored, background maintenance advanced the saved
+  revision without making the healthy request wait for the coordinator.
+- With only the event backend stopped, a check-in returned SQLite/pending in
+  approximately 5.2 seconds. After restart, a direct retry arrived before queued
+  replay. Recovery kept exactly one attendance record and reconciled the original
+  offline timestamp into SQL and its operation receipt. Cleanup restored the
+  original employee, attendance and winner totals.
+
+The C# listener admits 32 bounded workers, including up to 16 event requests;
+photo admission remains capped at four. Its upstream event connection limit is
+16. The Python event listener admits 32 requests with a backlog of 32. SQL still
+serializes business transactions with its application lock. These are admission
+bounds for bursts, not a promise of simultaneous SQL writes. The ten-session
+live test completed check-ins in at most 2.1 seconds. Warm sequential lookup
+had a median near 207 ms on that test connection; network and SQL load vary.
+
 A controlled live test of the earlier runtime on 2026-11-17 used a uniquely
 tagged synthetic employee
 excluded from prize draws. With the event backend stopped, the check-in returned
@@ -456,12 +535,21 @@ all synthetic employees were removed and the original attendance count remained
 unchanged. Regression tests also cover mismatched SQL/SQLite identities and
 snapshot-refresh failure followed by retry.
 
-Local quota and lifecycle regression checks cover the new runtime; its live
-deployment has not yet been verified. The implemented checks also cover native
+Local quota and lifecycle regression checks cover the new runtime. They also cover native
 SQL import integrity, concurrent business rules, replay, lost commit
 acknowledgments, cancellation fencing, mirror
 validation, authorization boundaries, and large payload handling. Key suites:
 
+- [test_direct_api_proxy.py](../tests/test_direct_api_proxy.py): direct SQL
+  routing, independent backup failure, signed failover and bounded maintenance.
+- [test_direct_replay.py](../tests/test_direct_replay.py): original-time replay,
+  duplicate receipts, revocation and administrator-reset boundaries.
+- [test_lookup_fast_path.py](../tests/test_lookup_fast_path.py): one-query exact
+  and token lookups, current employee state and leading-zero ambiguity.
+- [test_event_capacity.py](../tests/test_event_capacity.py): bounded HTTP
+  admission under concurrent requests and recovery after a burst.
+- [test_backup_confirmation.js](../tests/test_backup_confirmation.js): optional
+  fresh queue proof without disabling SQL or resolving unrelated operations.
 - [test_sql_migration_rehearsal.py](../tests/test_sql_migration_rehearsal.py):
   isolated full-data import, pending replay, lost receipts, late draw delivery,
   and real application read routes.

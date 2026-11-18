@@ -172,6 +172,19 @@ class SQLOnlinePrimary(SQLPrimary):
             self.backup_current = False
             self.diagnostic('event_backup_refresh_failed')
 
+    async def handle_unavailable_checkin(self, envelope):
+        """A verified edge failover already attempted SQL; do not time out again."""
+        if (not isinstance(envelope, dict) or envelope.get('method') != 'POST'
+                or envelope.get('path') != '/api/scan/checkin'
+                or not isinstance(envelope.get('recorded_at'), str)):
+            return _failure('Invalid check-in failover.', 400)
+        async with self.lock:
+            self.generation += 1
+            if not self.queue_known:
+                self._discover()
+            self.conflict_pending = any(item['state'] == 'conflict' for item in self.cached_queue)
+            return await self._offline(envelope)
+
     async def _offline(self, envelope):
         if (not self.backup_available or not self.cached_state
                 or not self.cached_state['seeded'] or not self.cached_state['ready']):
@@ -184,6 +197,8 @@ class SQLOnlinePrimary(SQLPrimary):
                                       'sqlite', pending=True)
             if method == 'POST' and path == '/api/scan/checkin':
                 saved = self._use(lambda store: self._load_saved(store, envelope['operation_id']))
+                if saved and intent_hash(saved['envelope']) != intent_hash(envelope):
+                    return self._decorate(_failure('This request ID belongs to another action.', 409), 'sqlite', pending=True)
                 if not self.backup_available:
                     return self._decorate(_failure('Check-in not confirmed. Retry the same action when connected.'),
                                           'sqlite', pending=True)

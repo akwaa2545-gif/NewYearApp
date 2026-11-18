@@ -45,7 +45,7 @@ namespace EventDesk.PhotoApi
         private readonly IEventApiTransport transport;
         private readonly int deadlineMilliseconds;
         private readonly ISafeLog log;
-        private readonly SemaphoreSlim slots = new SemaphoreSlim(4, 4);
+        private readonly SemaphoreSlim slots = new SemaphoreSlim(16, 16);
         private static readonly Regex JsonMedia = new Regex("\\Aapplication/json(?:\\s*;\\s*charset\\s*=\\s*(?:utf-8|\"utf-8\"))?\\z", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
         public EventApiProxy(IEventApiTransport value) : this(value, 30000, null) { }
@@ -225,7 +225,7 @@ namespace EventDesk.PhotoApi
             request.ContentType = "application/json; charset=utf-8";
             request.ContentLength = length;
             request.Headers["Authorization"] = "Bearer " + apiToken;
-            request.ServicePoint.ConnectionLimit = 8;
+            request.ServicePoint.ConnectionLimit = 16;
             return request;
         }
 

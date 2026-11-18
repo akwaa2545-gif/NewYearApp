@@ -1,8 +1,9 @@
 /* Request identities and last confirmed storage status contain no employee data. */
 (function (global) {
   'use strict';
-  let status = Object.freeze({storage:null, sync:null, backup:null, offline:false, uncertain:false});
+  let status = Object.freeze({storage:null, sync:null, backup:null, queue:null, offline:false, uncertain:false});
   let requestSequence = 0, lastDegradation = 0;
+  let backupProbeAt = 0, backupProbeInFlight = false;
   const uncertainOperations = new Set();
   const listeners = new Set();
   const identities = new Map();
@@ -128,7 +129,8 @@
 
   function publish(next) {
     if (next.storage === status.storage && next.sync === status.sync
-        && next.backup === status.backup && next.offline === status.offline && next.uncertain === status.uncertain) return status;
+        && next.backup === status.backup && next.queue === status.queue
+        && next.offline === status.offline && next.uncertain === status.uncertain) return status;
     status = Object.freeze(next);
     for (const listener of listeners) listener(status);
     return status;
@@ -146,18 +148,27 @@
     const source = headers?.get('X-EventDesk-Storage');
     const progress = headers?.get('X-EventDesk-Sync');
     const backupProgress = headers?.get('X-EventDesk-Backup');
+    const queueProgress = headers?.get('X-EventDesk-Queue');
     const pending = payload?.pending_sync === true;
     const degraded = pending || source === 'sqlite' || ['pending','recovering'].includes(progress);
     if (degraded) lastDegradation = Math.max(lastDegradation, request);
     const current = request >= lastDegradation;
     const storage = current && ['sql','sqlite'].includes(source) ? source : status.storage;
-    const sync = current && ['synced','pending','recovering'].includes(progress) ? progress : status.sync;
+    const sync = current && (['synced','pending','recovering'].includes(progress)
+      || source === 'sql' && progress === 'online') ? progress : status.sync;
     const backup = current && ['current','stale','unavailable'].includes(backupProgress) ? backupProgress : status.backup;
     const fullySynced = current && source === 'sql' && progress === 'synced' && !pending;
+    const online = current && source === 'sql' && progress === 'online' && !pending;
+    // Direct SQL proves connectivity, not that the separate outbox is empty.
+    // The legacy coordinator's synced response remains compatible; an explicit
+    // unknown/pending queue never upgrades a known pending check-in to clear.
+    const queue = pending || current && queueProgress === 'pending' ? 'pending'
+      : fullySynced && (queueProgress == null || queueProgress === 'clear') ? 'clear'
+      : current && queueProgress === 'unknown' && status.queue !== 'pending' ? 'unknown' : status.queue;
     if (resolvedOperation) resolveOperation(resolvedOperation);
-    const offline = fullySynced ? false : pending || source === 'sqlite'
+    const offline = fullySynced || online ? false : pending || source === 'sqlite'
       || ['pending','recovering'].includes(progress) || status.offline;
-    return publish({storage:pending ? 'sqlite' : storage, sync:pending ? 'pending' : sync, backup,
+    return publish({storage:pending ? 'sqlite' : storage, sync:pending ? 'pending' : sync, backup, queue,
       offline, uncertain:uncertainOperations.size > 0});
   }
 
@@ -165,6 +176,33 @@
     listeners.add(listener);
     listener(status);
     return () => listeners.delete(listener);
+  }
+
+  async function confirmBackup(active) {
+    if (active !== true || status.queue !== 'pending' || status.storage !== 'sql'
+        || status.offline || backupProbeInFlight || Date.now() < backupProbeAt
+        || typeof global.fetch !== 'function') return false;
+    backupProbeAt = Date.now() + 60000;
+    backupProbeInFlight = true;
+    const observation = beginRequest();
+    const controller = typeof global.AbortController === 'function' ? new global.AbortController() : null;
+    const timer = controller && global.setTimeout && global.clearTimeout
+      ? global.setTimeout(() => controller.abort(), 8000) : null;
+    let response;
+    try {
+      response = await global.fetch('/api/me?backup=1', {method:'GET', credentials:'same-origin',
+        cache:'no-store', ...(controller ? {signal:controller.signal} : {})});
+      if (!response.ok || response.headers.get('X-EventDesk-Storage') !== 'sql'
+          || response.headers.get('X-EventDesk-Sync') !== 'synced'
+          || response.headers.get('X-EventDesk-Queue') !== 'clear') return false;
+      update(response.headers, null, observation);
+      return status.queue === 'clear';
+    } catch (_) { return false; }
+    finally {
+      if (timer !== null) global.clearTimeout(timer);
+      backupProbeInFlight = false;
+      try { await response?.body?.cancel?.(); } catch (_) { /* The status headers are sufficient. */ }
+    }
   }
 
   restoreIdentities();
@@ -176,5 +214,5 @@
     publish({...status, uncertain:uncertainOperations.size > 0});
   });
   global.EventDeskStorage = Object.freeze({operationId, prepareOperation, completeOperation, beginRequest, markUncertain,
-    update, subscribe, current:() => status});
+    update, subscribe, confirmBackup, current:() => status});
 })(window);

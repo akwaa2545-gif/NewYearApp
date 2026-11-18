@@ -18,6 +18,7 @@ function pauseAppBackground() {
 
 async function refreshAppBackground(resuming = false) {
   if (!appBackgroundAllowed() || !state.profile || appRefreshInFlight) return;
+  void window.EventDeskStorage?.confirmBackup?.(true);
   if (['checkin','verify','wristband'].includes(state.view)) return;
   appRefreshInFlight = true;
   try {
@@ -61,12 +62,16 @@ function renderStorageStatus(status) {
   const banner = $('storageStatus');
   if (banner) {
     const backupNotice = status.storage === 'sql' && ['stale','unavailable'].includes(status.backup);
-    banner.hidden = !status.offline && !status.uncertain && !backupNotice;
-    banner.textContent = status.uncertain ? 'Last save is not confirmed. Keep this page open and retry the same action.'
-      : !status.offline ? status.backup === 'unavailable' ? 'API connected · Cloudflare quota limit reached'
-        : backupNotice ? 'API connected · Cloudflare backup updating' : '' : status.sync === 'recovering'
+    const queueNotice = status.queue === 'pending';
+    banner.hidden = !status.offline && !status.uncertain && !backupNotice && !queueNotice;
+    if (status.uncertain) banner.textContent = 'Last save is not confirmed. Keep this page open and retry the same action.';
+    else if (status.offline) banner.textContent = status.sync === 'recovering'
       ? 'Syncing check-ins. Draws will be available when connected.'
       : 'Offline copy · Check-ins will sync when connected. Draws are unavailable offline.';
+    else if (queueNotice) banner.textContent = 'API connected · Waiting for backup confirmation'
+      + (status.backup === 'unavailable' ? ' · Cloudflare quota limit reached' : '');
+    else if (status.backup === 'unavailable') banner.textContent = 'API connected · Cloudflare quota limit reached';
+    else banner.textContent = backupNotice ? 'API connected · Cloudflare backup updating' : '';
   }
   updateDrawAvailability();
 }

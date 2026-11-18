@@ -770,8 +770,9 @@ def ensure_wristband(db, employee_id, actor='system', status='not_issued', token
 def resolve_wristband(db, token):
     row = db.execute('''SELECT w.id AS wristband_id,w.employee_id AS wristband_employee_id,
                                w.token,w.status AS wristband_status,w.issued_at,w.issued_by,
-                               e.*
+                               e.*,x.reason AS checkin_wristband_reason
                         FROM wristbands w JOIN employees e ON e.id=w.employee_id
+                        LEFT JOIN checkin_wristband_exceptions x ON x.employee_id=e.id
                         WHERE w.token=?''', (token,)).fetchone()
     if row:
         return row
@@ -781,8 +782,10 @@ def resolve_wristband(db, token):
         return None
     wristband, _ = ensure_wristband(db, employee['id'], 'compatibility', 'issued', token)
     return db.execute('''SELECT w.id AS wristband_id,w.employee_id AS wristband_employee_id,
-                               w.token,w.status AS wristband_status,w.issued_at,w.issued_by,e.*
-                        FROM wristbands w JOIN employees e ON e.id=w.employee_id WHERE w.id=?''',
+                               w.token,w.status AS wristband_status,w.issued_at,w.issued_by,
+                               e.*,x.reason AS checkin_wristband_reason
+                        FROM wristbands w JOIN employees e ON e.id=w.employee_id
+                        LEFT JOIN checkin_wristband_exceptions x ON x.employee_id=e.id WHERE w.id=?''',
                       (wristband['id'],)).fetchone()
 
 
@@ -813,24 +816,28 @@ def employee_data(row):
     return result
 
 
-def find_employee_by_external_id(db, value):
+def find_employee_by_external_id(db, value, *, scan_details=False):
     """Find an ID exactly, then tolerate spreadsheet-trimmed leading zeroes.
 
     Numeric company badge QR codes may retain display zeroes that Excel removed
     from the imported master ID. The normalized fallback is accepted only when
     it identifies exactly one employee; exact text matches always win.
+    Scan details share the employee query without caching attendance state.
     """
     employee_id = str(value or '').strip()
     if not employee_id:
         return None
-    exact = db.execute('SELECT * FROM employees WHERE employee_id=?',
-                       (employee_id,)).fetchone()
+    source = ('SELECT e.*,w.id AS lookup_wristband_id,w.status AS lookup_wristband_status, '
+              'x.reason AS checkin_wristband_reason FROM employees e '
+              "LEFT JOIN wristbands w ON w.employee_id=e.id AND w.status IN ('not_issued','issued') "
+              'LEFT JOIN checkin_wristband_exceptions x ON x.employee_id=e.id'
+              if scan_details else 'SELECT e.* FROM employees e')
+    exact = db.execute(source + ' WHERE e.employee_id=?', (employee_id,)).fetchone()
     if exact or not employee_id.isdigit():
         return exact
     normalized = employee_id.lstrip('0') or '0'
-    matches = db.execute('''SELECT * FROM employees
-                            WHERE employee_id NOT GLOB '*[^0-9]*'
-                              AND COALESCE(NULLIF(ltrim(employee_id,'0'),''),'0')=?
+    matches = db.execute(source + ''' WHERE e.employee_id NOT GLOB '*[^0-9]*'
+                            AND COALESCE(NULLIF(ltrim(e.employee_id,'0'),''),'0')=?
                             LIMIT 2''', (normalized,)).fetchall()
     return matches[0] if len(matches) == 1 else None
 
@@ -3384,11 +3391,13 @@ class PartyHandler(BaseHTTPRequestHandler):
                 requested_employee_id = data.get('employee_id') or badge_employee_id
                 with db_connection() as db:
                     if requested_employee_id:
-                        employee = find_employee_by_external_id(db, requested_employee_id)
+                        employee = find_employee_by_external_id(db, requested_employee_id, scan_details=True)
                         if not employee: return self.fail_code('Employee not found.', 'employee_not_found', 404)
-                        wristband = active_wristband(db, employee['id'])
                         person = employee_data(employee)
-                        wristband_data = {'id': wristband['id'], 'status': wristband['status']} if wristband else None
+                        lookup_row = employee
+                        wristband_data = ({'id': employee['lookup_wristband_id'],
+                                           'status': employee['lookup_wristband_status']}
+                                          if employee['lookup_wristband_id'] is not None else None)
                         effective_lookup = {'code': scanned_code} if badge_employee_id else {'employee_id': person['employee_id']}
                     else:
                         code = normalize_token(scanned_code)
@@ -3399,11 +3408,10 @@ class PartyHandler(BaseHTTPRequestHandler):
                                                   resolved['wristband_status'] + '_wristband', 409,
                                                   {'person': employee_data(resolved)})
                         person = employee_data(resolved)
+                        lookup_row = resolved
                         wristband_data = {'id': resolved['wristband_id'], 'status': resolved['wristband_status']}
                         effective_lookup = {'code': scanned_code}
-                    exception = db.execute('SELECT reason FROM checkin_wristband_exceptions WHERE employee_id=?',
-                                           (person['id'],)).fetchone()
-                    person['checkin_wristband_reason'] = exception['reason'] if exception else None
+                    person['checkin_wristband_reason'] = lookup_row['checkin_wristband_reason']
                 lookup_source = ('id_badge' if badge_employee_id else
                                  ('employee_id' if data.get('employee_id') else 'wristband'))
                 return self.respond({'person': person, 'wristband': wristband_data,
