@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 120">
+  <defs>
+    <!-- The four scooped shoulders are part of the metal silhouette. -->
+    <path id="outline" d="M36 6H564Q566 6 566 9C567 19 576 26 588 26H591Q594 26 594 29V91Q594 94 591 94H588C576 94 567 101 566 111Q566 114 564 114H36Q34 114 34 111C33 101 24 94 12 94H9Q6 94 6 91V29Q6 26 9 26H12C24 26 33 19 34 9Q34 6 36 6Z"/>
+    <path id="engraving" d="M42 14H558C561 26 572 33 586 34V86C572 87 561 94 558 106H42C39 94 28 87 14 86V34C28 33 39 26 42 14Z"/>
+    <linearGradient id="bevel" x2=".18" y2="1">
+      <stop stop-color="#fff5c4"/><stop offset=".18" stop-color="#f2d58b"/>
+      <stop offset=".49" stop-color="#ab7834"/><stop offset=".55" stop-color="#fff1b7"/>
+      <stop offset="1" stop-color="#946328"/>
+    </linearGradient>
+    <linearGradient id="face" x1="0" y1="118" x2="570" y2="-68" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#c59a54"/><stop offset=".13" stop-color="#e8c98b"/>
+      <stop offset=".27" stop-color="#f8e5b2"/><stop offset=".32" stop-color="#fff1cb"/>
+      <stop offset=".43" stop-color="#e9ca8d"/><stop offset=".59" stop-color="#ddb979"/>
+      <stop offset=".76" stop-color="#f2dba5"/><stop offset=".82" stop-color="#fff0c5"/>
+      <stop offset="1" stop-color="#cfaa67"/>
+    </linearGradient>
+    <linearGradient id="polish" x2="0" y2="1">
+      <stop stop-color="#fff4d6" stop-opacity=".35"/><stop offset=".42" stop-color="#fff4d6" stop-opacity="0"/>
+      <stop offset="1" stop-color="#9b682f" stop-opacity=".19"/>
+    </linearGradient>
+    <radialGradient id="stud" cx=".34" cy=".24" r=".82">
+      <stop stop-color="#fff5cf"/><stop offset=".36" stop-color="#e9cd8e"/>
+      <stop offset=".75" stop-color="#c59c55"/><stop offset="1" stop-color="#8f682e"/>
+    </radialGradient>
+    <pattern id="grain" width="83" height="7" patternUnits="userSpaceOnUse">
+      <path d="M0 1h48m6 0h29M12 5h59" stroke="#fff8de" stroke-width=".6" opacity=".12"/>
+    </pattern>
+    <g id="screw">
+      <circle cy=".6" r="6.1" fill="#fff1bd"/>
+      <circle r="5.9" fill="#866232"/>
+      <circle r="4.9" fill="url(#stud)" stroke="#e6c580" stroke-width=".6"/>
+      <g transform="rotate(-32)" stroke-linecap="round">
+        <path d="M-2.8 .7h5.6" stroke="#fff0bc" stroke-width="1.3"/>
+        <path d="M-2.8 -.2h5.6" stroke="#866437" stroke-width="1.3"/>
+      </g>
+    </g>
+  </defs>
+  <use href="#outline" transform="translate(0 2)" fill="#87612e" stroke="#795626" stroke-width="3"/>
+  <use href="#outline" fill="url(#face)" stroke="url(#bevel)" stroke-width="5"/>
+  <use href="#outline" fill="url(#polish)" stroke="#fff0be" stroke-width=".85"/>
+  <use href="#outline" fill="url(#grain)"/>
+  <use href="#engraving" fill="none" transform="translate(0 1)" stroke="#fff1c4" stroke-width="2.2"/>
+  <use href="#engraving" fill="none" stroke="#ac8749" stroke-width="1.3"/>
+  <use href="#engraving" fill="none" transform="translate(300 60) scale(.989 .924) translate(-300 -60)" stroke="url(#bevel)" stroke-width="1"/>
+  <use href="#screw" transform="translate(28 60)"/>
+  <use href="#screw" transform="translate(572 60) rotate(65)"/>
+</svg>

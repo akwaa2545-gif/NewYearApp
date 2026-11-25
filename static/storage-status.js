@@ -37,7 +37,7 @@
         }
         if (identities.get(key)?.id !== entry.id) {
           // A newer command in another tab must not replace a local retry identity.
-          const restored = {id:entry.id, created:entry.created, saved:true};
+          const restored = {id:entry.id, created:entry.created, saved:true, draw:entry.draw};
           if (!identities.has(key)) {
             identities.set(key, restored);
             observedIdentities.delete(entry.id);
@@ -50,7 +50,7 @@
     }
   }
 
-  async function prepareOperation(requestKey) {
+  async function prepareOperation(requestKey, {allowWhileUncertain = false} = {}) {
     let key = requestKey;
     if (global.crypto?.subtle && global.TextEncoder) {
       const digest = await global.crypto.subtle.digest('SHA-256', new global.TextEncoder().encode(requestKey));
@@ -64,9 +64,20 @@
       }
       const existing = identities.get(key);
       if (existing) return existing.id;
-      if (uncertainOperations.size) throw new Error('Last save is not confirmed. Retry the same action before making another change.');
+      if (uncertainOperations.size && !allowWhileUncertain) {
+        throw new Error('Last save is not confirmed. Retry the same action before making another change.');
+      }
       if (identities.size + observedIdentities.size >= maximumIdentities) throw new Error('Too many saves are waiting for confirmation. Retry a pending action first.');
-      const entry = {id:operationId(), created:Date.now()};
+      let draw;
+      try {
+        const [path, method, body] = JSON.parse(requestKey);
+        if (path === '/api/draw' && method === 'POST') {
+          const data = JSON.parse(body);
+          if ((typeof data.prize_id === 'string' || typeof data.prize_id === 'number')
+              && typeof data.round_name === 'string') draw = {prize_id:data.prize_id, round_name:data.round_name};
+        }
+      } catch (_) { /* Other requests need no retry details. */ }
+      const entry = {id:operationId(), created:Date.now(), ...(draw ? {draw} : {})};
       identities.set(key, entry);
       if (persistent) {
         try {
@@ -79,6 +90,42 @@
     };
     if (global.navigator?.locks?.request) return global.navigator.locks.request('eventdesk-request-identity', prepare);
     return prepare();
+  }
+
+  async function findPendingOperation(requestKeys) {
+    if (persistent) restoreIdentities();
+    if (!global.crypto?.subtle || !global.TextEncoder) return requestKeys.findIndex(key => identities.has(key));
+    for (let index = 0; index < requestKeys.length; index += 1) {
+      const digest = await global.crypto.subtle.digest('SHA-256', new global.TextEncoder().encode(requestKeys[index]));
+      const key = prefix + Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, '0')).join('');
+      if (identities.has(key)) return index;
+    }
+    return -1;
+  }
+
+  function pendingDraw() {
+    if (persistent) restoreIdentities();
+    for (const entry of identities.values()) if (entry.draw) return entry.draw;
+    return null;
+  }
+
+  async function discardPending() {
+    const discard = () => {
+      if (persistent) {
+        const keys = [];
+        for (let index = 0; index < global.localStorage.length; index += 1) {
+          const key = global.localStorage.key(index);
+          if (key?.startsWith(prefix)) keys.push(key);
+        }
+        for (const key of keys) global.localStorage.removeItem(key);
+      }
+      identities.clear();
+      observedIdentities.clear();
+      uncertainOperations.clear();
+      publish({...status, uncertain:false});
+    };
+    if (global.navigator?.locks?.request) return global.navigator.locks.request('eventdesk-request-identity', discard);
+    return discard();
   }
 
   function resolveOperation(id) {
@@ -213,6 +260,6 @@
     // Deletion in another tab cannot prove a local in-flight request has resolved.
     publish({...status, uncertain:uncertainOperations.size > 0});
   });
-  global.EventDeskStorage = Object.freeze({operationId, prepareOperation, completeOperation, beginRequest, markUncertain,
+  global.EventDeskStorage = Object.freeze({operationId, prepareOperation, findPendingOperation, pendingDraw, discardPending, completeOperation, beginRequest, markUncertain,
     update, subscribe, confirmBackup, current:() => status});
 })(window);

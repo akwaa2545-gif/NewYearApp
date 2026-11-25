@@ -72,3 +72,7 @@ Thumbs.db
 *.ttf
 *.woff
 *.woff2
+
+# Open Font License typefaces bundled with the projector award plaque.
+!/static/assets/nameplate/cinzel-variable.ttf
+!/static/assets/nameplate/pridi-semibold.ttf

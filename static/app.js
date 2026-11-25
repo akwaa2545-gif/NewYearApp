@@ -1,19 +1,19 @@
 'use strict';
 
 const $ = (id) => document.getElementById(id);
-const state = {csrf:null, profile:null, view:'home', workspaces:{}, wheelTurn:0, drawing:false, prizeImageUploading:false, keyBuffer:'', keyAt:0, adminChecked:null, adminDrawCount:null, adminLoading:false, adminRefreshPending:false, adminEmployeeOperation:null, adminAttendanceOperation:null, adminDrawOperation:null, adminDialog:null, attendancePage:1, attendanceRequestId:0, wristbandPerson:null, wristbandRequestId:0, wristbandLoading:false, wristbandSaving:false, wristbandOperation:null};
+const state = {csrf:null, profile:null, view:'home', workspaces:{}, drawing:false, winnerHistorySaving:false, rewardReordering:false, rewardDragId:null, selectedPrizeId:null, prizeImageUploading:false, keyBuffer:'', keyAt:0, adminChecked:null, adminDrawCount:null, adminLoading:false, adminRefreshPending:false, adminEmployeeOperation:null, adminAttendanceOperation:null, adminDrawOperation:null, adminDialog:null, attendancePage:1, attendanceRequestId:0, wristbandPerson:null, wristbandRequestId:0, wristbandLoading:false, wristbandSaving:false, wristbandOperation:null};
 let appActivity = null, appPollTimer = null, appRefreshInFlight = false;
 let projectorPollTimer = null, projectorRefreshInFlight = false;
+let staffProjectorState = null;
+let rewardData = {drafts:[], prizes:[]};
+let winnerData = [];
+let projectorPopup = null, projectorPopupTimer = null;
 
 function appBackgroundAllowed() { return appActivity?.isActive() === true; }
 
 function pauseAppBackground() {
   clearInterval(appPollTimer); appPollTimer = null;
   stopProjectorPolling();
-  if (state.view === 'draw') {
-    $('projectorLiveDot').classList.remove('online');
-    $('projectorPhase').textContent = 'Paused · Tap to reconnect';
-  }
 }
 
 async function refreshAppBackground(resuming = false) {
@@ -51,11 +51,27 @@ function startAppBackground() {
 
 function updateDrawAvailability() {
   const button = $('spinButton');
+  const status = window.EventDeskStorage?.current();
+  const phase = staffProjectorState?.phase;
+  const busy = state.drawing || state.winnerHistorySaving || state.rewardReordering || state.prizeImageUploading || status?.offline === true
+    || Boolean(phase && ['preparing','spinning','winner_selected'].includes(phase));
+  const selectedPrize = rewardData.prizes.find(item => String(item.id) === String(state.selectedPrizeId));
   if (button) {
-    const status = window.EventDeskStorage?.current();
-    button.disabled = state.drawing || state.prizeImageUploading || status?.offline === true;
-    button.textContent = status?.uncertain ? 'Retry draw' : 'Draw';
+    button.disabled = busy || !selectedPrize;
+    button.textContent = status?.uncertain ? 'Retry same draw' : selectedPrize?.drawn > 0 ? 'Draw again' : 'Draw';
   }
+  document.querySelectorAll('.reward-select-button').forEach(selectButton => {
+    selectButton.disabled = state.drawing || state.winnerHistorySaving || state.rewardReordering;
+  });
+  const nextButton = $('readyNextDraw');
+  if (nextButton) nextButton.disabled = busy || status?.uncertain === true || !nextSelectablePrize();
+  const pending = selectedPrize && rewardData.drafts.find(draft => Number(draft.source_id) === Number(selectedPrize.id));
+  $('selectedPrizeAdd').disabled = state.drawing || state.winnerHistorySaving || state.rewardReordering;
+  $('selectedPrizeEdit').disabled = !selectedPrize || state.drawing || state.winnerHistorySaving || state.rewardReordering;
+  $('selectedPrizeEdit').textContent = pending ? 'Edit draft' : 'Edit';
+  $('selectedPrizeDelete').disabled = !selectedPrize || state.drawing || state.winnerHistorySaving || state.rewardReordering;
+  $('selectedPrizeDelete').title = pending ? 'Remove or publish the existing draft first.'
+    : selectedPrize?.drawn ? 'Prizes with winners cannot be deleted.' : '';
 }
 
 function renderStorageStatus(status) {
@@ -85,8 +101,13 @@ async function api(path, options={}) {
   const csrf = state.csrf;
   const requestKey = JSON.stringify([path, method, body, csrf]);
   const mutation = method === 'POST' && !['/api/lookup','/api/login','/api/logout','/api/staff-session'].includes(path);
+  const rewardMutation = mutation && ['/api/rewards/draft','/api/rewards/draft/delete',
+    '/api/rewards/publish','/api/rewards/reorder'].includes(path);
+  const prizeSelectionMutation = mutation && path === '/api/projector/state' && options.data?.phase === 'ready_for_next';
+  const allowWhileUncertain = rewardMutation || prizeSelectionMutation;
   const operationId = method === 'POST' ? mutation && window.EventDeskStorage?.prepareOperation
-    ? await window.EventDeskStorage.prepareOperation(requestKey) : window.EventDeskStorage?.operationId() : null;
+    ? await window.EventDeskStorage.prepareOperation(requestKey, {allowWhileUncertain})
+    : window.EventDeskStorage?.operationId() : null;
   const observation = window.EventDeskStorage?.beginRequest();
   const wasUncertain = window.EventDeskStorage?.current().uncertain;
   const uncertain = () => {
@@ -131,7 +152,7 @@ async function api(path, options={}) {
   }
   if (mutation && response.status >= 500) uncertain();
   const resolvedOperation = mutation && (response.ok || receipt === operationId
-    || response.status < 500 && !wasUncertain) ? operationId : null;
+    || response.status < 500 && (!wasUncertain || allowWhileUncertain)) ? operationId : null;
   if (resolvedOperation) await window.EventDeskStorage?.completeOperation?.(resolvedOperation);
   window.EventDeskStorage?.update(response.headers, payload, observation);
   if (!response.ok) {
@@ -627,67 +648,282 @@ async function removeAdminRecords(event, kind) {
 
 async function loadPrizeList() {
   const select = $('prizeSelect');
-  const previous = select.value;
   const config = await api('/api/draw/config');
   select.replaceChildren();
   const placeholder = document.createElement('option'); placeholder.value = '';
   placeholder.textContent = 'Select a reward'; select.append(placeholder);
   config.prizes.filter(prize => prize.active).forEach(prize => {
     const option = document.createElement('option'); option.value = String(prize.id);
-    option.textContent = `${prize.name} (${prize.remaining} remaining)`;
+    option.textContent = `${prize.name} (${prize.drawn} winners)`;
     option.dataset.prizeName = prize.name;
-    option.disabled = prize.remaining <= 0 && !window.EventDeskStorage?.current().uncertain;
     select.append(option);
   });
-  if ([...select.options].some(option => option.value === previous && !option.disabled)) select.value = previous;
+  if ([...select.options].some(option => option.value === String(state.selectedPrizeId))) select.value = String(state.selectedPrizeId);
   if (select.options.length === 1) placeholder.textContent = 'No rewards yet — ask the admin to add one';
   await loadRewards();
 }
 
-let rewardData = {drafts:[], prizes:[]};
+function nextSelectablePrize() {
+  const index = rewardData.prizes.findIndex(item => String(item.id) === String(state.selectedPrizeId));
+  if (!rewardData.prizes.length) return null;
+  return rewardData.prizes[index <= 0 ? rewardData.prizes.length - 1 : index - 1];
+}
+function renderSelectedPrizeWinners() {
+  const panel = $('winnerReveal');
+  const list = $('selectedPrizeWinners');
+  const winners = winnerData.filter(item => item.status === 'active'
+    && String(item.prize_id) === String(state.selectedPrizeId));
+  panel.hidden = !winners.length;
+  $('selectedPrizeWinnersTitle').textContent = winners.length === 1 ? 'Winner' : 'Winners';
+  list.replaceChildren(...winners.map(winner => {
+    const row = document.createElement('div'); row.className = 'staff-winner-entry';
+    for (const [label, value] of [
+      ['Employee ID', winner.employee_id || '—'],
+      ['Name', winner.name || 'Employee'],
+      ['Department', winner.department || '—'],
+    ]) {
+      const field = document.createElement('div');
+      const caption = document.createElement('span'); caption.textContent = label;
+      const detail = document.createElement('strong'); detail.textContent = value;
+      field.append(caption, detail); row.append(field);
+    }
+    const remove = document.createElement('button');
+    remove.type = 'button'; remove.className = 'button danger staff-winner-remove';
+    remove.textContent = 'Delete winner';
+    remove.disabled = state.drawing || state.winnerHistorySaving;
+    remove.setAttribute('aria-label', `Delete winner ${winner.name || winner.employee_id}`);
+    remove.addEventListener('click', () => deleteSelectedWinner(winner));
+    row.append(remove);
+    return row;
+  }));
+}
+
+async function deleteSelectedWinner(winner) {
+  if (state.winnerHistorySaving || state.drawing || !window.confirm(`Delete ${winner.name || winner.employee_id} from winner history?`)) return;
+  state.winnerHistorySaving = true; updateDrawAvailability(); renderSelectedPrizeWinners();
+  const message = $('drawMessage'); message.className = 'form-message'; message.textContent = 'Deleting winner…';
+  try {
+    await api('/api/winners/remove', {method:'POST', data:{winner_id:winner.winner_id}});
+    await Promise.all([loadWinnerHistory(), loadPrizeList(), refreshStats(), loadProjectorState()]);
+    message.className = 'form-message success'; message.textContent = 'Winner removed.';
+  } catch (error) {
+    message.className = 'form-message error'; message.textContent = error.message;
+  } finally {
+    state.winnerHistorySaving = false; renderSelectedPrizeWinners(); updateDrawAvailability();
+  }
+}
+
+function renderSelectedPrize() {
+  const prize = rewardData.prizes.find(item => String(item.id) === String(state.selectedPrizeId));
+  if (!prize) state.selectedPrizeId = null;
+  $('prizeSelect').value = prize ? String(prize.id) : '';
+  $('selectedPrizeName').textContent = prize?.name || 'Select a prize below';
+  $('selectedPrizeProgress').textContent = prize ? `${prize.drawn} winner${prize.drawn === 1 ? '' : 's'}` : '';
+  const image = $('selectedPrizeImage');
+  image.hidden = !prize?.has_image;
+  if (prize?.has_image) {
+    const url = `/api/rewards/image?id=${encodeURIComponent(prize.id)}&v=${encodeURIComponent(prize.updated_at || '')}`;
+    if (image.getAttribute('src') !== url) image.src = url;
+  } else image.removeAttribute('src');
+  document.querySelectorAll('.reward-card-tile').forEach(card => {
+    card.classList.toggle('is-selected', card.dataset.prizeId === String(state.selectedPrizeId));
+  });
+  renderSelectedPrizeWinners();
+  updateDrawAvailability();
+}
+async function selectReward(item) {
+  state.selectedPrizeId = item.id;
+  renderSelectedPrize();
+  $('selectedPrize').scrollIntoView({behavior:'smooth', block:'center'});
+  try { await setProjectorPhase('ready_for_next', {prize:item.name}, false); }
+  catch (error) { toast(error.message, 'error'); }
+}
+async function advanceSelectedPrize() {
+  const next = nextSelectablePrize();
+  if (!next) return;
+  await selectReward(next);
+}
+async function refreshDrawPage() {
+  const button = $('refreshDraw');
+  if (button.disabled) return;
+  button.disabled = true;
+  try {
+    const results = await Promise.allSettled([loadPrizeList(), loadProjectorState(), loadWinnerHistory(), refreshStats()]);
+    const failed = results.find(result => result.status === 'rejected');
+    if (failed) throw failed.reason;
+    toast('Draw page refreshed.', 'success');
+  } catch (error) { toast(error.message, 'error'); }
+  finally { button.disabled = false; }
+}
 function resetRewardForm() {
   $('rewardForm').reset(); $('rewardDraftId').value = ''; $('rewardSourceId').value = '';
   $('rewardQuantity').value = 1; $('rewardAdd').textContent = 'Add to list'; $('rewardCancel').hidden = true;
 }
+function showRewardSetup() {
+  const dialog = $('rewardSetup');
+  if (!dialog.open) dialog.showModal();
+}
 function rewardEdit(item, isDraft) {
-  $('rewardSetup').open = true;
+  showRewardSetup();
   $('rewardDraftId').value = isDraft ? item.id : '';
   $('rewardSourceId').value = isDraft ? (item.source_id || '') : item.id;
   $('rewardName').value = item.name; $('rewardQuantity').value = item.quantity;
   $('rewardImage').value = ''; $('rewardRemoveImage').checked = false;
   $('rewardAdd').textContent = 'Save change'; $('rewardCancel').hidden = false; $('rewardName').focus();
 }
-function rewardRow(item, isDraft) {
+function openAddPrize() {
+  resetRewardForm();
+  showRewardSetup();
+  $('rewardName').focus();
+}
+function editSelectedPrize() {
+  const prize = rewardData.prizes.find(item => String(item.id) === String(state.selectedPrizeId));
+  if (!prize) return;
+  const pending = rewardData.drafts.find(draft => Number(draft.source_id) === Number(prize.id));
+  rewardEdit(pending || prize, Boolean(pending));
+}
+async function deleteSelectedPrize() {
+  const prize = rewardData.prizes.find(item => String(item.id) === String(state.selectedPrizeId));
+  if (!prize) return;
+  if (prize.drawn) return toast('Prizes with winners cannot be deleted.', 'error');
+  if (rewardData.drafts.some(draft => Number(draft.source_id) === Number(prize.id))) {
+    return toast('Remove or publish the pending change first.', 'error');
+  }
+  if (!confirm(`Remove ${prize.name} from the projector when you submit?`)) return;
+  const button = $('selectedPrizeDelete'); button.disabled = true;
+  try {
+    await api('/api/rewards/draft', {method:'POST', data:{source_id:prize.id,name:prize.name,quantity:prize.quantity,action:'remove'}});
+    resetRewardForm();
+    showRewardSetup();
+    await loadRewards();
+    $('rewardMessage').textContent = 'Prize marked for deletion. Click Show rewards to apply.';
+  } catch (error) { $('rewardMessage').textContent = error.message; toast(error.message, 'error'); }
+  finally { updateDrawAvailability(); }
+}
+function rewardRow(item, isDraft, number) {
   const row = document.createElement('div'); row.className = 'reward-row';
+  if (!isDraft) {
+    row.classList.add('reward-card-tile');
+    row.draggable = true;
+    row.title = 'Click to select or drag to reorder';
+    row.dataset.prizeId = String(item.id);
+    row.dataset.rewardSignature = JSON.stringify([item.name, item.quantity, item.drawn, item.has_image, item.updated_at]);
+    row.addEventListener('click', () => {
+      if (!state.drawing && !state.rewardReordering) selectReward(item);
+    });
+    const badge = document.createElement('strong'); badge.className = 'reward-tile-number';
+    badge.textContent = String(number);
+    row.append(badge);
+  }
   const detail = document.createElement('span');
   detail.textContent = `${item.name} · ${item.quantity}${item.action === 'remove' ? ' · To delete' : ''}${item.drawn ? ` · ${item.drawn} awarded` : ''}`;
-  if (item.has_image) { const img = document.createElement('img'); img.className = 'reward-thumbnail'; img.alt = ''; img.src = `/api/rewards/image?${isDraft ? 'draft' : 'id'}=${encodeURIComponent(item.id)}&v=${Date.now()}`; detail.prepend(img); }
+  if (item.has_image) { const img = document.createElement('img'); img.className = 'reward-thumbnail'; img.alt = ''; img.draggable = false; img.src = `/api/rewards/image?${isDraft ? 'draft' : 'id'}=${encodeURIComponent(item.id)}&v=${isDraft ? Date.now() : encodeURIComponent(item.updated_at || '')}`; detail.prepend(img); }
   const actions = document.createElement('div');
-  const pending = !isDraft && rewardData.drafts.find(draft => Number(draft.source_id) === Number(item.id));
-  const edit = document.createElement('button'); edit.type = 'button'; edit.textContent = pending ? 'Edit draft' : 'Edit';
-  edit.addEventListener('click', () => rewardEdit(pending || item, Boolean(pending) || isDraft));
-  const remove = document.createElement('button'); remove.type = 'button'; remove.textContent = isDraft ? 'Remove' : 'Delete';
-  if (!isDraft && (item.drawn || pending)) { remove.disabled = true; remove.title = pending ? 'Remove or submit the existing draft first.' : 'Rewards with winners cannot be deleted.'; }
-  remove.addEventListener('click', async () => {
-    if (!isDraft && !confirm(`Remove ${item.name} from the projector when you submit?`)) return;
-    try {
-      if (isDraft) await api('/api/rewards/draft/delete', {method:'POST', data:{id:item.id}});
-      else await api('/api/rewards/draft', {method:'POST', data:{source_id:item.id,name:item.name,quantity:item.quantity,action:'remove'}});
-      resetRewardForm(); await loadRewards();
-    } catch (error) { $('rewardMessage').textContent = error.message; }
-  });
-  actions.append(edit, remove); row.append(detail, actions); return row;
+  if (!isDraft) {
+    const select = document.createElement('button');
+    select.type = 'button'; select.className = 'reward-select-button'; select.textContent = 'Select';
+    select.addEventListener('click', event => { event.stopPropagation(); selectReward(item); });
+    actions.append(select);
+  }
+  if (isDraft) {
+    const edit = document.createElement('button'); edit.type = 'button'; edit.textContent = 'Edit';
+    edit.addEventListener('click', () => rewardEdit(item, true));
+    const remove = document.createElement('button'); remove.type = 'button'; remove.textContent = 'Remove';
+    remove.addEventListener('click', async () => {
+      try {
+        await api('/api/rewards/draft/delete', {method:'POST', data:{id:item.id}});
+        resetRewardForm(); await loadRewards();
+      } catch (error) { $('rewardMessage').textContent = error.message; }
+    });
+    actions.append(edit, remove);
+  }
+  row.append(detail, actions); return row;
+}
+function renderPublishedRewards() {
+  const published = $('rewardPublishedList');
+  const existing = new Map([...published.children].map(card => [card.dataset.prizeId, card]));
+  published.replaceChildren(...rewardData.prizes.map((item, index) => {
+    const signature = JSON.stringify([item.name, item.quantity, item.drawn, item.has_image, item.updated_at]);
+    const card = existing.get(String(item.id));
+    if (!card || card.dataset.rewardSignature !== signature) return rewardRow(item, false, index + 1);
+    card.querySelector('.reward-tile-number').textContent = String(index + 1);
+    return card;
+  }));
+  renderSelectedPrize();
 }
 async function loadRewards() {
   rewardData = await api('/api/rewards');
-  const draft = $('rewardDraftList'), published = $('rewardPublishedList');
-  draft.replaceChildren(); published.replaceChildren();
+  const draft = $('rewardDraftList');
+  draft.replaceChildren();
   rewardData.drafts.forEach(item => draft.append(rewardRow(item, true)));
-  rewardData.prizes.forEach(item => published.append(rewardRow(item, false)));
-  if (!rewardData.prizes.length) published.textContent = 'No rewards yet.';
-  $('rewardCount').textContent = `${rewardData.prizes.length} reward${rewardData.prizes.length === 1 ? '' : 's'}`;
+  renderPublishedRewards();
+  $('rewardCount').textContent = `${rewardData.prizes.length} reward${rewardData.prizes.length === 1 ? '' : 's'}`
+    + (rewardData.drafts.length ? ` · ${rewardData.drafts.length} pending` : '');
   $('rewardSetupSummary').textContent = rewardData.drafts.length ? `${rewardData.drafts.length} pending` : '';
   $('rewardPublish').disabled = !rewardData.drafts.length;
+}
+function clearRewardDrag() {
+  state.rewardDragId = null;
+  $('rewardPublishedList').querySelectorAll('.is-dragging,.drop-before,.drop-after').forEach(card => {
+    card.classList.remove('is-dragging', 'drop-before', 'drop-after');
+  });
+}
+function startRewardDrag(event) {
+  const card = event.target.closest('.reward-card-tile');
+  const status = window.EventDeskStorage?.current();
+  if (!card || event.target.closest('button') || state.drawing || state.rewardReordering
+      || status?.offline || status?.uncertain) return event.preventDefault();
+  state.rewardDragId = Number(card.dataset.prizeId);
+  card.classList.add('is-dragging');
+  event.dataTransfer.effectAllowed = 'move';
+  event.dataTransfer.setData('text/plain', card.dataset.prizeId);
+}
+function moveRewardDrag(event) {
+  if (!state.rewardDragId) return;
+  const card = event.target.closest('.reward-card-tile');
+  if (!card || Number(card.dataset.prizeId) === state.rewardDragId) return;
+  event.preventDefault();
+  $('rewardPublishedList').querySelectorAll('.drop-before,.drop-after').forEach(item => {
+    item.classList.remove('drop-before', 'drop-after');
+  });
+  const after = event.clientX > card.getBoundingClientRect().left + card.getBoundingClientRect().width / 2;
+  card.classList.add(after ? 'drop-after' : 'drop-before');
+  event.dataTransfer.dropEffect = 'move';
+}
+async function dropReward(event) {
+  const card = event.target.closest('.reward-card-tile');
+  const sourceId = state.rewardDragId;
+  if (!card || !sourceId || Number(card.dataset.prizeId) === sourceId) return clearRewardDrag();
+  event.preventDefault();
+  const after = card.classList.contains('drop-after');
+  const targetId = Number(card.dataset.prizeId);
+  clearRewardDrag();
+  const previous = [...rewardData.prizes];
+  const source = previous.find(item => item.id === sourceId);
+  const ordered = previous.filter(item => item.id !== sourceId);
+  const targetIndex = ordered.findIndex(item => item.id === targetId);
+  if (!source || targetIndex < 0) return;
+  ordered.splice(targetIndex + Number(after), 0, source);
+  const expectedIds = previous.map(item => item.id);
+  const ids = ordered.map(item => item.id);
+  if (ids.every((id, index) => id === expectedIds[index])) return;
+  state.rewardReordering = true;
+  rewardData.prizes = ordered;
+  renderPublishedRewards();
+  try {
+    await api('/api/rewards/reorder', {method:'POST', data:{ids, expected_ids:expectedIds}});
+    await loadProjectorState().catch(() => {});
+    await loadRewards().catch(() => {});
+    toast('Prize order saved.', 'success');
+  } catch (error) {
+    rewardData.prizes = previous;
+    renderPublishedRewards();
+    await loadRewards().catch(() => {});
+    toast(error.message, 'error');
+  } finally {
+    state.rewardReordering = false;
+    updateDrawAvailability();
+  }
 }
 async function addRewardDraft(event) {
   event.preventDefault(); const button = $('rewardAdd'); button.disabled = true;
@@ -705,6 +941,7 @@ async function publishRewards() {
   try {
     await api('/api/rewards/publish', {method:'POST', data:{ids:rewardData.drafts.map(item => item.id)}});
     resetRewardForm(); await loadPrizeList(); $('rewardMessage').textContent = 'Rewards saved.';
+    if ($('rewardSetup').open) $('rewardSetup').close();
   } catch (error) { $('rewardMessage').textContent = error.message; await loadRewards().catch(() => {}); }
 }
 
@@ -1293,14 +1530,42 @@ async function drawWinner(event) {
   if (state.drawing) return;
   if (window.EventDeskStorage?.current().offline) return toast('Draws are unavailable offline.', 'error');
   if (state.prizeImageUploading) return toast('Wait for the upload.', 'error');
-  const selected = $('prizeSelect').selectedOptions[0];
-  const prizeId = $('prizeSelect').value;
-  const prize = selected?.dataset.prizeName || '';
-  const round = $('roundInput').value.trim();
+  if (staffProjectorState && ['preparing','spinning','winner_selected'].includes(staffProjectorState.phase)
+      && !window.EventDeskStorage?.current().uncertain) return;
+  const selected = rewardData.prizes.find(item => String(item.id) === String(state.selectedPrizeId));
+  if (!selected) return;
+  let prizeId = selected.id;
+  let prize = selected.name;
+  let round = $('roundInput').value.trim();
   if (!prize) return;
-  state.drawing = true; $('spinButton').disabled = true; $('winnerReveal').hidden = true; $('drawMessage').textContent = 'Selecting a winner securely…';
+  state.drawing = true; updateDrawAvailability();
+  $('drawMessage').textContent = 'Selecting a winner securely…';
   try {
     if (window.EventDeskStorage?.current().uncertain) {
+      // Recover the original body if staff changed prize or round after an unconfirmed draw.
+      const candidates = [];
+      const savedDraw = window.EventDeskStorage.pendingDraw();
+      for (const item of rewardData.prizes) {
+        for (const id of [item.id, String(item.id)]) {
+          for (const roundName of new Set([savedDraw?.round_name, round, ''])) {
+            if (roundName === undefined) continue;
+            const data = {prize_id:id, round_name:roundName};
+            candidates.push({item, data, key:JSON.stringify(['/api/draw', 'POST', JSON.stringify(data), state.csrf])});
+          }
+        }
+      }
+      const pendingIndex = await window.EventDeskStorage.findPendingOperation(candidates.map(item => item.key));
+      if (pendingIndex >= 0) {
+        const pending = candidates[pendingIndex];
+        prizeId = pending.data.prize_id;
+        prize = pending.item.name;
+        round = pending.data.round_name;
+        if (String(state.selectedPrizeId) !== String(prizeId)) {
+          state.selectedPrizeId = pending.item.id;
+          renderSelectedPrize();
+        }
+        $('roundInput').value = round;
+      }
       // Validate the exact saved request before any projector update or other write.
       const key = JSON.stringify(['/api/draw', 'POST', JSON.stringify({prize_id:prizeId, round_name:round}), state.csrf]);
       try { await window.EventDeskStorage.prepareOperation(key); }
@@ -1311,15 +1576,14 @@ async function drawWinner(event) {
       }
     } else await setProjectorPhase('preparing', {prize, round_name:round}, false);
     const payload = await api('/api/draw', {method:'POST', data:{prize_id:prizeId, round_name:round}});
-    state.wheelTurn += 1800 + Math.floor(Math.random() * 360);
-    $('luckyWheel').style.transform = `rotate(${state.wheelTurn}deg)`;
-    $('drawMessage').textContent = 'Winner saved. Revealing…';
-    setTimeout(() => {
-      const winner = payload.winner;
-      $('winnerName').textContent = winner.extra?.first_name || winner.name;
-      $('winnerMeta').textContent = `Employee ID: ${winner.employee_id} · Department: ${winner.department || 'No department'}`;
-      $('winnerPrize').textContent = winner.prize || prize;
-      $('winnerReveal').hidden = false;
+    const winner = payload.winner;
+    $('drawMessage').textContent = 'Winner saved. Revealing employee ID…';
+    const revealWinner = () => {
+      if (!winnerData.some(item => item.winner_id === winner.winner_id)) {
+        winnerData.unshift({winner_id:winner.winner_id, prize_id:prizeId, employee_id:winner.employee_id,
+          name:winner.name, department:winner.department, status:'active'});
+      }
+      renderSelectedPrizeWinners();
       $('drawMessage').textContent = 'Winner saved.';
       $('drawMessage').className = 'form-message success';
       state.drawing = false; updateDrawAvailability();
@@ -1327,11 +1591,32 @@ async function drawWinner(event) {
       loadPrizeList().catch(() => {});
       loadProjectorState().catch(() => {});
       loadWinnerHistory().catch(() => {});
-    }, 5200);
+    };
+    setTimeout(revealWinner, 7200);
   } catch (error) {
-    $('drawMessage').textContent = error.message; $('drawMessage').className = 'form-message error';
+    const unmatchedSave = error.message === 'Last save is not confirmed. Retry the same action before making another change.';
+    $('drawMessage').textContent = unmatchedSave
+      ? 'An older save cannot be matched to this draw. Review the winners, then clear the old pending save to continue.'
+      : error.message;
+    $('drawMessage').className = 'form-message error';
+    $('clearOldPending').hidden = !unmatchedSave;
     state.drawing = false; updateDrawAvailability();
-    if (error.code !== 'draw_in_progress' && !window.EventDeskStorage?.current().uncertain) setProjectorPhase('ready_for_next', {}, false).catch(() => {});
+    if (error.code !== 'draw_in_progress' && !window.EventDeskStorage?.current().uncertain) {
+      setProjectorPhase('ready_for_next', {prize, round_name:round}, false).catch(() => {});
+    }
+  }
+}
+
+async function clearOldPendingSave() {
+  try {
+    await window.EventDeskStorage.discardPending();
+    $('clearOldPending').hidden = true;
+    $('drawMessage').className = 'form-message success';
+    $('drawMessage').textContent = 'Old pending save cleared. Check the selected prize, then draw.';
+    await Promise.all([loadWinnerHistory(), loadPrizeList(), refreshStats()]);
+  } catch (error) {
+    $('drawMessage').className = 'form-message error';
+    $('drawMessage').textContent = error.message;
   }
 }
 
@@ -1359,31 +1644,9 @@ async function addLuckyParticipant(event) {
 
 async function loadWinnerHistory() {
   const payload = await api('/api/winners');
-  const host = $('winnerHistory');
-  host.replaceChildren();
-  const winners = (payload.items || []).slice(0, 8);
-  if (!winners.length) {
-    const empty = document.createElement('p'); empty.className = 'muted';
-    empty.textContent = 'No winners yet.'; host.append(empty); return;
-  }
-  winners.forEach(winner => {
-    const item = document.createElement('article'); item.className = 'history-item';
-    const person = document.createElement('div');
-    const name = document.createElement('strong'); name.textContent = winner.name || 'Employee';
-    const meta = document.createElement('span'); meta.textContent = [winner.employee_id, winner.department].filter(Boolean).join(' • ');
-    person.append(name, meta);
-    const draw = document.createElement('div'); draw.className = 'history-prize';
-    const prize = document.createElement('strong'); prize.textContent = winner.prize || 'Prize';
-    const round = document.createElement('span'); round.textContent = winner.round_name || 'Draw';
-    draw.append(prize, round); item.append(person, draw); host.append(item);
-  });
+  winnerData = payload.items || [];
+  renderSelectedPrizeWinners();
 }
-
-const projectorLabels = {
-  waiting:'Waiting', preparing:'Preparing', spinning:'Spinning',
-  winner_selected:'Winner selected', winner_announced:'Winner announced',
-  ready_for_next:'Ready for next draw'
-};
 
 function renderPrizeImageControl(payload) {
   const preview = $('prizeImagePreview');
@@ -1446,16 +1709,8 @@ async function removePrizeImage() {
 }
 
 function renderProjectorState(payload) {
-  const phase = payload.phase || 'waiting';
-  const connected = !appActivity || appBackgroundAllowed();
-  $('projectorPhase').textContent = connected ? projectorLabels[phase] || 'Connected' : 'Paused · Tap to reconnect';
-  $('projectorLiveDot').classList.toggle('online', connected);
-  const details = [];
-  if (payload.prize) details.push(payload.prize);
-  if (payload.round_name) details.push(payload.round_name);
-  details.push(`${Number(payload.eligible || 0).toLocaleString()} eligible`);
-  $('projectorDetail').textContent = details.join(' • ');
-  $('readyNextDraw').disabled = phase === 'ready_for_next' || state.drawing;
+  staffProjectorState = payload;
+  updateDrawAvailability();
   renderPrizeImageControl(payload);
 }
 
@@ -1467,7 +1722,7 @@ async function loadProjectorState() {
 
 function connectProjectorState() {
   if (!appBackgroundAllowed() || state.view !== 'draw' || !state.profile) return;
-  if (projectorPollTimer === null) projectorPollTimer = setInterval(refreshDrawProjector, 3000);
+  if (projectorPollTimer === null) projectorPollTimer = setInterval(refreshDrawProjector, 1000);
 }
 
 function stopProjectorPolling() {
@@ -1479,23 +1734,53 @@ async function refreshDrawProjector() {
   if (!appBackgroundAllowed() || state.view !== 'draw' || !state.profile || projectorRefreshInFlight) return;
   projectorRefreshInFlight = true;
   try { await loadProjectorState(); }
-  catch (_) {
-    if (!appBackgroundAllowed() || state.view !== 'draw') return;
-    $('projectorLiveDot').classList.remove('online');
-    $('projectorPhase').textContent = 'Reconnecting';
-  } finally { projectorRefreshInFlight = false; }
+  catch (_) { /* Keep the last state until the next refresh. */ }
+  finally { projectorRefreshInFlight = false; }
 }
 
 async function setProjectorPhase(phase, details={}, notify=true) {
   const payload = await api('/api/projector/state', {method:'POST', data:{phase, ...details}});
+  if (phase === 'ready_for_next' && Number.isSafeInteger(payload.sequence)) {
+    try { window.localStorage.setItem('eventdesk-projector-selection', String(payload.sequence)); }
+    catch (_) { /* Projectors also poll the server. */ }
+  }
   renderProjectorState(payload);
-  if (notify) toast('Ready for the next draw.', 'success');
+  if (notify) toast(phase === 'ready_for_next' ? 'Prize poster is on the projector.' : 'Projector updated.', 'success');
   return payload;
 }
 
+function setProjectorButtonState(mode) {
+  const button = $('openProjector');
+  button.classList.toggle('projector-opening', mode === 'opening');
+  button.classList.toggle('projector-open', mode === 'open');
+  button.textContent = mode === 'opening' ? 'Opening projector…'
+    : mode === 'open' ? 'Projector open' : 'Open projector';
+}
+
 function openProjectorWindow() {
-  const projector = window.open('/projector', 'eventdesk-projector');
-  if (!projector) toast('Allow pop-ups to open the screen.', 'error');
+  if (projectorPopup && !projectorPopup.closed) {
+    projectorPopup.focus();
+    setProjectorButtonState('open');
+    return;
+  }
+  setProjectorButtonState('opening');
+  const projector = window.open('/projector?intro=1', 'eventdesk-projector');
+  if (!projector) {
+    setProjectorButtonState('closed');
+    toast('Allow pop-ups to open the screen.', 'error');
+    return;
+  }
+  projectorPopup = projector;
+  if (projectorPopupTimer === null) {
+    projectorPopupTimer = setInterval(() => {
+      if (projectorPopup && !projectorPopup.closed) return;
+      projectorPopup = null;
+      clearInterval(projectorPopupTimer);
+      projectorPopupTimer = null;
+      setProjectorButtonState('closed');
+    }, 1000);
+  }
+  setProjectorButtonState('open');
 }
 
 async function loadProjectorSettings() {
@@ -1606,13 +1891,23 @@ async function initialize() {
   $('adminDrawForm').addEventListener('submit', removeAdminDrawHistory);
   updateAttendanceScope();
   $('drawForm').addEventListener('submit', drawWinner);
+  $('clearOldPending').addEventListener('click', clearOldPendingSave);
   $('rewardForm').addEventListener('submit', addRewardDraft);
+  $('rewardPublishedList').addEventListener('dragstart', startRewardDrag);
+  $('rewardPublishedList').addEventListener('dragover', moveRewardDrag);
+  $('rewardPublishedList').addEventListener('drop', dropReward);
+  $('rewardPublishedList').addEventListener('dragend', clearRewardDrag);
   $('rewardCancel').addEventListener('click', resetRewardForm);
+  $('rewardDialogClose').addEventListener('click', () => $('rewardSetup').close());
   $('rewardPublish').addEventListener('click', publishRewards);
+  $('selectedPrizeAdd').addEventListener('click', openAddPrize);
+  $('selectedPrizeEdit').addEventListener('click', editSelectedPrize);
+  $('selectedPrizeDelete').addEventListener('click', deleteSelectedPrize);
   $('prizeImageInput').addEventListener('change', uploadPrizeImage);
   $('removePrizeImage').addEventListener('click', removePrizeImage);
   $('openProjector').addEventListener('click', openProjectorWindow);
-  $('readyNextDraw').addEventListener('click', () => setProjectorPhase('ready_for_next').catch(error => toast(error.message, 'error')));
+  $('readyNextDraw').addEventListener('click', advanceSelectedPrize);
+  $('refreshDraw').addEventListener('click', refreshDrawPage);
   $('projectorSettingsForm').addEventListener('submit', saveProjectorSettings);
   $('addParticipantForm').addEventListener('submit', addLuckyParticipant);
   document.addEventListener('keydown', captureScanner);

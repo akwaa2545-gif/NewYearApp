@@ -3,19 +3,86 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-  <meta name="theme-color" content="#07111f">
+  <meta name="theme-color" content="#abd3f0">
   <title>Projector | EventDesk</title>
   <link rel="stylesheet" href="/static/projector.css">
   <script defer src="/static/activity.js"></script>
   <script defer src="/static/storage-status.js"></script>
+  <script defer src="/static/digit-draw.js"></script>
   <script defer src="/static/projector.js"></script>
 </head>
 <body data-theme="gold">
-  <main id="presentation" class="presentation" aria-live="polite">
-    <div class="ambient ambient-one" aria-hidden="true"></div>
-    <div class="ambient ambient-two" aria-hidden="true"></div>
-    <header class="presentation-header">
-      <div class="theme-lockup"><div class="theme-regions" aria-label="Hometowns across Thailand"><span>North</span><span>Isan</span><span>Central</span><span>South</span></div></div>
+  <main id="presentation" class="presentation" aria-label="Lucky draw projector">
+    <svg class="scene-art" viewBox="0 0 1670 942" aria-hidden="true" focusable="false">
+      <defs>
+        <image id="stage-poster" href="/static/assets/tokin-stage-no-title.png" width="1670" height="942"/>
+        <linearGradient id="ribbon-silk" x2="1" y2=".35" gradientUnits="objectBoundingBox">
+          <stop stop-color="#c98825"/><stop offset=".32" stop-color="#ffe594"/>
+          <stop offset=".48" stop-color="#fff7d5"/><stop offset=".74" stop-color="#ecc058"/>
+          <stop offset="1" stop-color="#b87621"/>
+        </linearGradient>
+        <g id="sky-ribbon">
+          <path fill="#b67a2d" d="M-8 2 Q-1 -8 7 -5 L15 1 Q5 -2 0 6Z"/>
+          <path fill="url(#ribbon-silk)" d="M-28 12 Q-19 18 -12 6 Q-6 -6 1 -6 L7 -5 Q0 -5 -6 9 Q-14 24 -25 18Z"/>
+          <path fill="url(#ribbon-silk)" d="M7 -5 Q17 0 25 -16 L29 -20 Q25 -1 15 1 Q11 1 7 -5Z"/>
+        </g>
+        <path id="star-glint" d="M0 -12 Q1 -2 2 -1 L10 0 Q2 1 1 3 L0 12 Q-1 3 -2 1 L-10 0 Q-2 -1 -1 -3Z"/>
+        <linearGradient id="year-blend" x1="0" y1="0" x2="0" y2="1" gradientUnits="objectBoundingBox">
+          <stop stop-color="black"/><stop offset=".05" stop-color="white"/>
+          <stop offset=".70" stop-color="white"/><stop offset="1" stop-color="black"/>
+        </linearGradient>
+        <linearGradient id="sky-blend">
+          <stop stop-color="black"/><stop offset=".17" stop-color="white"/>
+          <stop offset=".83" stop-color="white"/><stop offset="1" stop-color="black"/>
+        </linearGradient>
+        <mask id="year-window" maskUnits="userSpaceOnUse" x="190" y="245" width="1290" height="265">
+          <rect x="190" y="245" width="1290" height="265" fill="url(#year-blend)"/>
+        </mask>
+        <mask id="sky-window" maskUnits="userSpaceOnUse" x="190" y="245" width="1290" height="265">
+          <rect x="190" y="245" width="1290" height="265" fill="url(#sky-blend)"/>
+        </mask>
+      </defs>
+      <use href="#stage-poster"/>
+      <!-- Scale the printed year and its flourishes together. Extend the surrounding sky to meet it. -->
+      <g mask="url(#year-window)"><g mask="url(#sky-window)">
+        <svg x="190" y="245" width="330" height="105" viewBox="190 245 120 175" preserveAspectRatio="none"><use href="#stage-poster"/></svg>
+        <svg x="520" y="245" width="630" height="105" viewBox="310 245 1050 175" preserveAspectRatio="none"><use href="#stage-poster"/></svg>
+        <svg x="1150" y="245" width="330" height="105" viewBox="1360 245 120 175" preserveAspectRatio="none"><use href="#stage-poster"/></svg>
+        <svg x="190" y="350" width="330" height="160" viewBox="190 420 120 90" preserveAspectRatio="none"><use href="#stage-poster"/></svg>
+        <svg x="520" y="350" width="630" height="160" viewBox="310 420 1050 90" preserveAspectRatio="none"><use href="#stage-poster"/></svg>
+        <svg x="1150" y="350" width="330" height="160" viewBox="1360 420 120 90" preserveAspectRatio="none"><use href="#stage-poster"/></svg>
+      </g></g>
+      <g class="journey-glints" fill="none" stroke-linecap="round">
+        <path class="road-glint" pathLength="100" d="M883 731 C1020 750 966 760 906 776 S706 840 1004 940"/>
+        <path class="ribbon-glint" pathLength="100" d="M30 940 C175 917 350 838 535 808"/>
+        <path class="ribbon-glint" pathLength="100" d="M1265 873 C1433 854 1515 741 1670 713"/>
+      </g>
+      <g class="floating-ribbons">
+        <g transform="translate(525 528) scale(-1 1)">
+          <use class="air-ribbon" href="#sky-ribbon"/>
+          <use class="air-ribbon ribbon-high" x="65" y="-72" href="#sky-ribbon"/>
+        </g>
+        <g transform="translate(1140 540)">
+          <use class="air-ribbon ribbon-right" href="#sky-ribbon"/>
+          <use class="air-ribbon ribbon-high ribbon-right" x="56" y="-92" href="#sky-ribbon"/>
+        </g>
+      </g>
+      <g class="sky-glitter" fill="#fff9df">
+        <g transform="translate(414 25)"><use href="#star-glint"/></g>
+        <g transform="translate(517 39)"><use href="#star-glint"/></g>
+        <g transform="translate(410 87)"><use href="#star-glint"/></g>
+        <g transform="translate(1120 21)"><use href="#star-glint"/></g>
+        <g transform="translate(1247 132)"><use href="#star-glint"/></g>
+        <g transform="translate(1355 326)"><use href="#star-glint"/></g>
+      </g>
+    </svg>
+    <div class="scene-content">
+    <header class="event-lockup">
+      <p class="event-brand">TOKIN</p>
+      <p class="event-party">NEW YEAR PARTY</p>
+      <div class="event-ornament" aria-hidden="true"><span class="bow"><i></i></span></div>
+      <h1>THE JOURNEY CONTINUE</h1>
+      <p class="event-year">2027</p>
       <div class="presentation-tools">
         <span id="connectionBadge" class="connection-badge is-connecting"><i></i><span>Connecting</span></span>
         <button id="soundToggle" class="projector-tool" type="button" aria-pressed="false" title="Sound on">Sound off</button>
@@ -23,43 +90,53 @@
       </div>
     </header>
 
-    <section id="drawStage" class="projector-stage">
-      <div class="prize-block"><div id="projectorPrizeVisual" class="prize-visual" hidden><img id="projectorPrizeImage" alt=""></div><span>DRAW</span><strong id="projectorPrize">Prize</strong><small id="projectorRound"></small></div>
-      <div class="projector-wheel-wrap" aria-hidden="true">
-        <div class="projector-pointer"></div>
-        <div id="projectorWheel" class="projector-wheel">
-          <div class="wheel-rings"></div>
-          <div id="wheelEmployeeIds" class="wheel-employee-ids" aria-label="Sample eligible employee IDs"></div>
-          <div class="wheel-center" aria-hidden="true"></div>
-        </div>
+    <section id="welcomeStage" class="welcome-stage" aria-label="Waiting for staff to choose a prize">
+
+    </section>
+
+    <section id="drawStage" class="projector-stage" hidden>
+      <div class="prize-viewport"><div id="prizeTrack" class="prize-track"></div></div>
+      <div class="id-draw-wrap">
+        <p class="id-draw-label">EMPLOYEE ID</p>
+        <div id="projectorDigits" class="employee-id-draw" aria-label="Seven-digit employee ID"></div>
+        <p id="projectorDrawIdFallback" class="draw-id-fallback" hidden></p>
+        <p id="projectorDrawWinnerName" class="draw-winner-name" aria-live="polite" hidden></p>
+        <p id="projectorWinnerMeta" class="winner-department" hidden></p>
       </div>
       <div class="stage-status"><strong id="phaseTitle">Ready</strong><span id="phaseDetail"></span></div>
     </section>
+    </div>
 
     <section id="winnerStage" class="winner-stage" hidden>
-      <div id="celebration" class="celebration" aria-hidden="true"></div>
       <img id="winnerPrizeImage" class="winner-prize-image" alt="" hidden>
       <p class="winner-kicker">CONGRATULATIONS</p>
-      <p id="projectorWinnerId" class="winner-employee-id"></p>
       <h2 id="projectorWinnerName">Winner</h2>
-      <p id="projectorWinnerMeta"></p>
+      <div id="projectorWinnerId" class="employee-id-draw winner-employee-id" aria-label="Winning employee ID"></div>
+      <p id="projectorWinnerIdFallback" class="winner-employee-id" hidden></p>
       <div class="winner-prize-label" id="winnerPrize">Prize</div>
       <small id="winnerRound"></small>
     </section>
 
-    <section id="prizeBoard" class="reward-overview" aria-label="Rewards and winners">
-      <div class="reward-overview-heading"><h2>Rewards &amp; winners</h2><span id="prizeBoardPage"></span></div>
-      <div id="prizeBoardRows" class="reward-overview-grid"></div>
-      <div class="overview-actions"><button id="boardPrevious" class="projector-tool" type="button">Previous</button><span id="overviewMessage"></span><button id="boardNext" class="projector-tool" type="button">Next</button></div>
+    <section id="prizeBoard" class="reward-overview" aria-label="Rewards and winners" hidden>
+      <div class="reward-overview-heading"><div><h2>Tonight's prizes</h2><p id="prizeBoardGuide">Start with prize 11, then draw down to prize 1.</p></div><span id="prizeBoardPage"></span></div>
+      <div class="reward-overview-stage">
+        <div class="poster-show" aria-label="Prize poster waiting for staff selection">
+          <span class="waiting-question" aria-hidden="true">?</span>
+          <div id="posterPrizes" class="poster-prizes"></div>
+        </div>
+        <div id="prizeBoardRows" class="reward-overview-grid poster-data-grid" aria-hidden="true"></div>
+      </div>
+      <div class="overview-actions"><button id="boardPrevious" class="projector-tool" type="button">Previous page</button><span id="overviewMessage"></span><button id="startShowDraw" class="projector-tool primary-tool" type="button">Start draw · Prize #11</button><button id="boardNext" class="projector-tool" type="button">Next page</button></div>
     </section>
     <nav id="drawNavigation" class="draw-navigation" aria-label="Draw navigation" hidden>
       <button id="showRewards" class="projector-tool" type="button">All rewards</button>
-      <button id="prizePrevious" class="projector-tool" type="button">Previous</button>
       <button id="confirmProjectorDraw" class="projector-tool primary-tool" type="button">Draw</button>
-      <button id="prizeNext" class="projector-tool" type="button">Next</button>
+      <button id="prizeNext" class="projector-tool" type="button">Next prize</button>
+      <span id="showProgress"></span>
       <span id="projectorMessage" role="status"></span>
     </nav>
 
+    <div id="celebration" class="celebration" aria-hidden="true"></div>
     <footer class="presentation-footer"><span id="eligibleCount">0 eligible employees</span></footer>
   </main>
   <section id="accessScreen" class="access-screen" hidden>

@@ -1,4 +1,3 @@
-@font-face{font-family:"FC Pride";src:url("/static/fonts/fc-pride.otf") format("opentype");font-style:normal;font-weight:400;font-display:swap}
 :root{--ink:#172033;--muted:#687386;--line:#e3e8f0;--paper:#fff;--canvas:#f5f7fb;--navy:#111c36;--blue:#315eea;--blue-soft:#eef2ff;--green:#0a9a74;--green-soft:#e8f8f2;--amber:#e28a12;--amber-soft:#fff5df;--purple:#7156d9;--shadow:0 18px 55px rgba(27,39,72,.09);font-family:"FC Pride", Inter,"Segoe UI",Arial,sans-serif;color:var(--ink);background:var(--canvas)}
 *{box-sizing:border-box}html,body{margin:0;min-height:100%;background:var(--canvas)}body{min-height:100vh}button,input,select,textarea{font:inherit}button{cursor:pointer}button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:3px solid rgba(49,94,234,.25);outline-offset:2px}[hidden]{display:none!important}.brand{font-size:19px;font-weight:900;letter-spacing:-.05em;color:var(--ink);text-decoration:none}.brand span{color:#5579f4}.brand-light{color:#fff}.brand-button{border:0;background:none;padding:8px 0}.kicker{margin:0 0 10px;font-size:11px;line-height:1.2;font-weight:800;letter-spacing:.16em;color:#6e7c92}.muted{color:var(--muted)}
 
@@ -354,27 +353,46 @@ input,select,textarea{width:100%;border:1px solid #d8dee9;border-radius:0;backgr
 .draw-view .reward-list-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}
 .draw-view .reward-list-heading h2{margin:0}
 .draw-view #rewardCount{color:var(--muted);font-size:13px;font-weight:700;white-space:nowrap}
-.draw-view #rewardPublishedList{max-height:min(46vh,460px);overflow-y:auto;overscroll-behavior:contain;margin-top:12px;border-top:1px solid var(--line)}
+.draw-view #rewardPublishedList{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin-top:16px}
+.draw-view #rewardPublishedList .reward-card-tile{display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start;gap:10px;min-width:0;min-height:150px;padding:14px;border:1px solid var(--line);border-radius:12px;background:#fff}
+.draw-view #rewardPublishedList .reward-card-tile{cursor:grab;user-select:none}
+.draw-view #rewardPublishedList .reward-card-tile.is-dragging{opacity:.45;cursor:grabbing}
+.draw-view #rewardPublishedList .reward-card-tile.drop-before{box-shadow:inset 5px 0 #c9522c}
+.draw-view #rewardPublishedList .reward-card-tile.drop-after{box-shadow:inset -5px 0 #c9522c}
+.draw-view .reward-card-tile .reward-tile-number{display:grid;place-items:center;width:30px;height:30px;border-radius:50%;background:#f5d477;color:#302448;font-size:14px}
+.draw-view .reward-card-tile>span{display:flex;flex:1;flex-direction:column;gap:8px;min-width:0;overflow-wrap:anywhere;font-weight:700;line-height:1.35}
+.draw-view .reward-card-tile .reward-thumbnail{width:100%;height:72px;object-fit:contain}
+.draw-view .reward-card-tile>div{display:flex;flex-wrap:wrap;gap:2px;margin-top:auto}
+.draw-view .reward-card-tile.is-selected{border-color:#c9522c;box-shadow:0 0 0 2px rgba(201,82,44,.16)}
+.draw-view .reward-card-tile .reward-select-button{width:100%;min-height:42px;border-radius:8px;background:#513b78;color:#fff}
+.draw-view .reward-card-tile .reward-select-button:hover:not(:disabled),.draw-view .reward-card-tile .reward-select-button:focus-visible:not(:disabled){background:#6d4c9b}
+.draw-view .reward-card-tile .reward-select-button:disabled{opacity:.5;cursor:not-allowed}
 .draw-view .reward-row button{min-height:44px;padding:8px 12px}
-.draw-view .reward-setup{margin-top:16px;border-top:1px solid var(--line)}
-.draw-view .reward-setup>summary,.draw-view .draw-history>summary{min-height:52px;display:flex;align-items:center;gap:12px;cursor:pointer;font-size:16px;font-weight:750;list-style:none}
-.draw-view .reward-setup>summary::-webkit-details-marker,.draw-view .draw-history>summary::-webkit-details-marker{display:none}
-.draw-view .reward-setup>summary::after,.draw-view .draw-history>summary::after{content:'+';margin-left:auto;font-size:22px;font-weight:400}
-.draw-view .reward-setup[open]>summary::after,.draw-view .draw-history[open]>summary::after{content:'−'}
+.draw-view .draw-history>summary{min-height:52px;display:flex;align-items:center;gap:12px;cursor:pointer;font-size:16px;font-weight:750;list-style:none}
+.draw-view .draw-history>summary::-webkit-details-marker{display:none}
+.draw-view .draw-history>summary::after{content:'+';margin-left:auto;font-size:22px;font-weight:400}
+.draw-view .draw-history[open]>summary::after{content:'−'}
+.draw-view .reward-dialog{width:min(760px,calc(100vw - 32px));max-height:calc(100dvh - 32px);padding:22px;border:1px solid var(--line);border-radius:12px;background:#fff;color:var(--ink);box-shadow:0 24px 70px rgba(18,27,46,.28);overflow:auto}
+.draw-view .reward-dialog::backdrop{background:rgba(17,28,54,.55)}
+.draw-view .reward-dialog-heading{display:flex;align-items:center;gap:12px}
+.draw-view .reward-dialog-heading h2{margin:0;font-size:22px}
+.draw-view .reward-dialog-heading button{margin-left:auto;width:36px;height:36px;border:0;background:#f1f3f7;color:var(--ink);cursor:pointer;font-size:24px;line-height:1}
 .draw-view #rewardSetupSummary{font-size:12px;color:var(--muted);font-weight:600}
-.draw-view .reward-setup-body{padding:8px 0 4px}
+.draw-view .reward-setup-body{padding:18px 0 4px}
 .draw-view .draw-history{padding:8px 22px;margin-top:14px}
-.draw-view .draw-history .winner-history{max-height:35vh;overflow-y:auto;overscroll-behavior:contain}
 @media(max-width:900px){
   .draw-view .view-heading{margin-bottom:12px}
   .draw-view .projector-toolbar{padding:16px 18px}
   .draw-view .reward-editor{padding:16px 18px}
   .draw-view .reward-form label:first-of-type{min-width:100%}
+  .draw-view #rewardPublishedList{grid-template-columns:repeat(3,minmax(0,1fr))}
 }
 @media(max-width:640px){
   .draw-view .projector-toolbar-actions .button{width:100%}
-  .draw-view .reward-row{align-items:flex-start;flex-wrap:wrap}
-  .draw-view .reward-row>div{margin-left:auto}
+  .draw-view #rewardPublishedList{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+  .draw-view #rewardPublishedList .reward-card-tile{min-height:140px;padding:10px}
+  .draw-view #rewardDraftList .reward-row{align-items:flex-start;flex-wrap:wrap}
+  .draw-view #rewardDraftList .reward-row>div{margin-left:auto}
 }
 
 /* Camera controls and check-in actions stay reachable on short phone screens. */
@@ -523,3 +541,36 @@ input,select,textarea{width:100%;border:1px solid #d8dee9;border-radius:0;backgr
 .scan-receipt.pending{border-color:#d9b965;background:#fff9e9;color:#654a0b}
 .scan-receipt.pending .receipt-status{color:#654a0b}
 @media(max-width:640px){.storage-status{padding:10px 16px;font-size:13px}}
+
+.draw-view .staff-draw-grid{grid-template-columns:minmax(0,1fr);max-width:800px;margin:0 auto 18px}
+.draw-view{padding-top:16px}
+.draw-view .view-heading{margin-bottom:12px}
+.draw-view .view-heading>div>p:last-child{margin-top:0}
+.draw-view .draw-action-bar{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;max-width:800px;margin:0 auto 18px;padding:14px}
+.draw-view .draw-action-bar .button{min-height:50px;padding:10px;white-space:nowrap}
+.draw-view .draw-action-bar #spinButton{margin:0;min-height:50px}
+.draw-view .draw-action-bar .button:disabled{opacity:.5;cursor:not-allowed}
+.draw-view #openProjector.projector-opening::before,.draw-view #openProjector.projector-open::before{content:'';display:inline-block;width:9px;height:9px;margin-right:8px;border-radius:50%;background:#28c76f;box-shadow:0 0 0 3px rgba(40,199,111,.2);vertical-align:middle}
+@media(max-width:640px){.draw-view .draw-action-bar{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;padding:10px}}
+.draw-view .selected-prize-panel{text-align:center;padding:18px clamp(20px,4vw,48px)}
+.draw-view .selected-prize{display:grid;justify-items:center;gap:10px;min-height:120px;align-content:center;padding:16px;border:1px solid var(--line);border-radius:14px;background:#fff9f2}
+.draw-view .selected-prize img{max-width:100%;max-height:240px;object-fit:contain}
+.draw-view .selected-prize img[hidden]{display:none}
+.draw-view .selected-prize strong{font-size:clamp(22px,3vw,34px);line-height:1.2;overflow-wrap:anywhere}
+.draw-view .selected-prize span{color:var(--muted);font-size:15px}
+.draw-view .selected-prize-actions{display:flex;justify-content:center;gap:8px;flex-wrap:wrap;margin-top:12px}
+.draw-view .selected-prize-actions button{min-height:38px;padding:7px 14px;border:1px solid #d8c9e9;border-radius:8px;background:#fff;color:#513b78;cursor:pointer;font:inherit;font-size:13px;font-weight:750}
+.draw-view .selected-prize-actions #selectedPrizeAdd{border-color:#513b78;background:#513b78;color:#fff}
+.draw-view .selected-prize-actions button:disabled{opacity:.45;cursor:not-allowed}
+.draw-view .draw-participant .participant-form{margin:8px 0 12px;padding:0;border:0}
+.draw-view .staff-winner{padding:20px 24px;display:grid;gap:14px}
+.draw-view .staff-winner[hidden]{display:none}
+.draw-view .staff-winner h2{margin:0;font-size:20px}
+.draw-view .staff-winner-remove{min-height:36px;padding:7px 12px;font-size:13px}
+.draw-view #selectedPrizeWinners{display:grid;gap:10px}
+.draw-view .staff-winner-entry{display:grid;grid-template-columns:minmax(120px,.75fr) minmax(0,1.35fr) minmax(0,1fr) auto;align-items:center;gap:14px;padding:12px 14px;border:1px solid var(--line);border-radius:10px;background:#fff9f2;text-align:left}
+.draw-view .staff-winner-entry>div{display:grid;align-content:start;gap:3px;min-width:0}
+.draw-view .staff-winner-entry span{color:var(--muted);font-size:12px;font-weight:700}
+.draw-view .staff-winner-entry strong{overflow-wrap:anywhere;color:var(--ink);font-size:16px}
+@media(max-width:640px){.draw-view .staff-winner-entry{grid-template-columns:1fr 1fr}.draw-view .staff-winner-entry>div:nth-child(2){grid-column:1/-1;grid-row:1}.draw-view .staff-winner-remove{grid-column:1/-1}}
+button,.button{border-radius:0!important}

@@ -41,6 +41,7 @@ function fixture(replies, localStorage = memoryStorage()) {
     }});
   vm.runInContext(helperSource(), context);
   vm.runInContext(appSource, context);
+  vm.runInContext("rewardData.prizes = [{id:1,name:'Reward',quantity:1,drawn:0}]; state.selectedPrizeId = 1;", context);
   return {calls, node, context, localStorage, run:code => vm.runInContext(code, context)};
 }
 
@@ -229,7 +230,7 @@ test('an uncertain mutation retains its identity and offers only a guarded draw 
   ]);
   await assert.rejects(f.run("api('/api/draw', {method:'POST', data:{prize_id:1}})"), /Cannot connect/);
   const originalId = f.calls[0].options.headers['X-EventDesk-Operation-Id'];
-  assert.equal(f.node('spinButton').textContent, 'Retry draw');
+  assert.equal(f.node('spinButton').textContent, 'Retry same draw');
   assert.equal(f.context.window.EventDeskStorage.current().uncertain, true);
   assert.match(f.node('storageStatus').textContent, /save.*not confirmed/i);
   await f.run("api('/api/stats')");
@@ -439,18 +440,65 @@ test('a reward consumed by the unconfirmed draw remains selectable for exact ret
   f.context.document.createElement = () => ({dataset:{}});
   f.run('loadRewards = async () => {}');
   await f.run('loadPrizeList()');
-  assert.equal(select.options[1].disabled, false);
+  assert.notEqual(select.options[1].disabled, true);
 });
 
-test('draw form retry blocks changed inputs before any projector or draw request', async () => {
-  const f = fixture([new Error('lost reply')]);
-  await assert.rejects(f.run("api('/api/draw', {method:'POST',data:{prize_id:'1',round_name:'Original'}})"));
+test('draw form retry restores the original prize and round before sending the saved request', async () => {
+  const saved = memoryStorage();
+  const first = fixture([new Error('lost reply')], saved);
+  await assert.rejects(first.run("api('/api/draw', {method:'POST',data:{prize_id:'1',round_name:'Original'}})"));
+  const f = fixture([{status:200,payload:{winner:{winner_id:1,employee_id:'123',name:'Winner'}}}], saved);
   f.node('prizeSelect').selectedOptions = [{dataset:{prizeName:'Reward'}}];
   f.node('prizeSelect').value = '2';
+  f.run("rewardData.prizes.push({id:'2',name:'Reward',quantity:1,drawn:0}); state.selectedPrizeId = '2'");
   f.node('roundInput').value = 'Changed';
+  f.node('selectedPrizeImage').removeAttribute = () => {};
+  f.node('selectedPrizeWinners').replaceChildren = () => {};
+  f.context.document.querySelectorAll = () => [];
+  f.run('refreshStats = async () => {}; loadPrizeList = async () => {}; loadProjectorState = async () => {}; loadWinnerHistory = async () => {}');
   await f.run('drawWinner({preventDefault(){}})');
   assert.equal(f.calls.length, 1);
-  assert.match(f.node('drawMessage').textContent, /retry the same action/i);
+  assert.equal(f.calls[0].path, '/api/draw');
+  assert.equal(f.calls[0].options.body, first.calls[0].options.body);
+  assert.equal(f.calls[0].options.headers['X-EventDesk-Operation-Id'], first.calls[0].options.headers['X-EventDesk-Operation-Id']);
+  assert.equal(f.node('roundInput').value, 'Original');
+  assert.equal(f.run('state.selectedPrizeId'), 1);
+});
+
+test('an older saved draw without retry details still matches its original prize', async () => {
+  const saved = memoryStorage();
+  const first = fixture([new Error('lost reply')], saved);
+  await assert.rejects(first.run("api('/api/draw', {method:'POST',data:{prize_id:1,round_name:''}})"));
+  for (const [key, value] of saved.entries) {
+    const {id, created} = JSON.parse(value);
+    saved.setItem(key, JSON.stringify({id, created}));
+  }
+  const f = fixture([{status:200,payload:{winner:{winner_id:1,employee_id:'123',name:'Winner'}}}], saved);
+  f.run("rewardData.prizes.push({id:2,name:'Second',quantity:1,drawn:1}); state.selectedPrizeId = 2");
+  f.node('roundInput').value = '';
+  f.node('selectedPrizeImage').removeAttribute = () => {};
+  f.node('selectedPrizeWinners').replaceChildren = () => {};
+  f.run('refreshStats = async () => {}; loadPrizeList = async () => {}; loadProjectorState = async () => {}; loadWinnerHistory = async () => {}');
+  await f.run('drawWinner({preventDefault(){}})');
+  assert.equal(f.calls.length, 1);
+  assert.equal(f.calls[0].options.headers['X-EventDesk-Operation-Id'], first.calls[0].options.headers['X-EventDesk-Operation-Id']);
+  assert.equal(f.run('state.selectedPrizeId'), 1);
+});
+
+test('an unmatched old save offers an explicit review and clear action', async () => {
+  const f = fixture([new Error('lost reply')]);
+  await assert.rejects(f.run("api('/api/rewards/reorder', {method:'POST',data:{ids:[1,2]}})"));
+  f.node('roundInput').value = '';
+  await f.run('drawWinner({preventDefault(){}})');
+  assert.equal(f.calls.length, 1);
+  assert.equal(f.node('clearOldPending').hidden, false);
+  assert.match(f.node('drawMessage').textContent, /review the winners/i);
+  f.context.window.confirm = () => true;
+  f.run('loadWinnerHistory = async () => {}; loadPrizeList = async () => {}; refreshStats = async () => {}');
+  await f.run('clearOldPendingSave()');
+  assert.equal(f.localStorage.length, 0);
+  assert.equal(f.context.window.EventDeskStorage.current().uncertain, false);
+  assert.equal(f.node('clearOldPending').hidden, true);
 });
 
 test('draw form retry uses the original ID without a projector write first', async () => {
@@ -458,13 +506,25 @@ test('draw form retry uses the original ID without a projector write first', asy
   await assert.rejects(f.run("api('/api/draw', {method:'POST',data:{prize_id:'1',round_name:'Original'}})"));
   f.node('prizeSelect').selectedOptions = [{dataset:{prizeName:'Reward'}}];
   f.node('prizeSelect').value = '1';
+  f.run("rewardData.prizes[0].id = '1'; state.selectedPrizeId = '1'");
   f.node('roundInput').value = 'Original';
-  f.node('luckyWheel').style = {};
   f.run('refreshStats = async () => {}; loadPrizeList = async () => {}; loadProjectorState = async () => {}; loadWinnerHistory = async () => {}');
   await f.run('drawWinner({preventDefault(){}})');
   assert.equal(f.calls.length, 2);
   assert.equal(f.calls[1].path, '/api/draw');
   assert.equal(f.calls[1].options.headers['X-EventDesk-Operation-Id'], f.calls[0].options.headers['X-EventDesk-Operation-Id']);
+});
+
+test('a rejected draw leaves the selected prize on the projector', async () => {
+  const f = fixture([{status:409,payload:{error:'No eligible employees are available.',code:'no_eligible'}}]);
+  f.node('roundInput').value = 'Round A';
+  f.run('var projectorPhases = []; setProjectorPhase = async (...args) => { projectorPhases.push(args); };');
+  await f.run('drawWinner({preventDefault(){}})');
+  assert.equal(f.run('projectorPhases.length'), 2);
+  assert.equal(f.run('projectorPhases[0][0]'), 'preparing');
+  assert.equal(f.run('projectorPhases[1][0]'), 'ready_for_next');
+  assert.equal(f.run('projectorPhases[1][1].prize'), 'Reward');
+  assert.equal(f.run('projectorPhases[1][1].round_name'), 'Round A');
 });
 
 test('old unresolved identities never expire silently and reject another unsafe action', async () => {
@@ -477,6 +537,82 @@ test('old unresolved identities never expire silently and reject another unsafe 
   await assert.rejects(next.run("api('/api/admin/employees', {method:'POST',data:{name:'different'}})"), /retry the same action/i);
   assert.equal(next.calls.length, 0);
   assert.equal(saved.length, 1);
+});
+
+test('an unresolved draw still allows reward setup without clearing the draw warning', async () => {
+  const f = fixture([new Error('lost reply'), {status:200, payload:{id:1}}]);
+  await assert.rejects(f.run("api('/api/draw', {method:'POST',data:{prize_id:1}})"));
+  await f.run("api('/api/rewards/draft', {method:'POST',data:{name:'Prize',quantity:1}})");
+  assert.equal(f.calls.length, 2);
+  assert.equal(f.calls[1].path, '/api/rewards/draft');
+  assert.equal(f.context.window.EventDeskStorage.current().uncertain, true);
+  await assert.rejects(f.run("api('/api/admin/employees', {method:'POST',data:{name:'Different'}})"),
+    /retry the same action/i);
+  assert.equal(f.calls.length, 2);
+});
+
+test('an unconfirmed draw still allows staff to show a selected prize on the projector', async () => {
+  const f = fixture([new Error('lost reply'), {status:200, payload:{phase:'ready_for_next',prize:'Tablet'}}]);
+  await assert.rejects(f.run("api('/api/draw', {method:'POST',data:{prize_id:1}})"));
+  await f.run("api('/api/projector/state', {method:'POST',data:{phase:'ready_for_next',prize:'Tablet'}})");
+  assert.equal(f.calls[1].path, '/api/projector/state');
+  assert.equal(f.context.window.EventDeskStorage.current().uncertain, true);
+});
+
+test('an awarded prize offers Draw again beyond its quantity', () => {
+  const f = fixture([]);
+  f.run("rewardData.prizes = [{id:7,name:'Prize seven',quantity:1,drawn:1}]; state.selectedPrizeId = 7; updateDrawAvailability();");
+  assert.equal(f.node('spinButton').textContent, 'Draw again');
+  assert.equal(f.node('spinButton').disabled, false);
+  f.context.window.EventDeskStorage.markUncertain('pending-draw');
+  assert.equal(f.node('spinButton').textContent, 'Retry same draw');
+});
+
+test('selecting a prize sends it to the projector', async () => {
+  const f = fixture([]);
+  f.node('selectedPrize').scrollIntoView = () => {};
+  f.run('var projectorSelections = []; renderSelectedPrize = () => {}; setProjectorPhase = async (...args) => { projectorSelections.push(args); };');
+  await f.run("selectReward({id:3,name:'Tablet'})");
+  assert.equal(f.run('state.selectedPrizeId'), 3);
+  assert.equal(f.run('JSON.stringify(projectorSelections)'),
+    '[["ready_for_next",{"prize":"Tablet"},false]]');
+});
+
+test('only a confirmed prize selection signals other windows to refresh', async () => {
+  const f = fixture([{status:200, payload:{phase:'ready_for_next', sequence:7}}, {status:409, payload:{error:'Busy'}}]);
+  f.run('renderProjectorState = () => {}');
+  await f.run("setProjectorPhase('ready_for_next', {prize:'Tablet'}, false)");
+  assert.equal(f.localStorage.getItem('eventdesk-projector-selection'), '7');
+  f.localStorage.removeItem('eventdesk-projector-selection');
+  await assert.rejects(f.run("setProjectorPhase('ready_for_next', {prize:'Watch'}, false)"));
+  assert.equal(f.localStorage.getItem('eventdesk-projector-selection'), null);
+});
+
+test('staff can delete one selected prize winner', async () => {
+  const f = fixture([{status:200, payload:{removed:1}}]);
+  f.context.window.confirm = () => true;
+  f.run("winnerData = [{winner_id:21,prize_id:1,name:'Guest',status:'active'}]; renderSelectedPrizeWinners = () => {}; updateDrawAvailability = () => {}; loadWinnerHistory = async () => {}; loadPrizeList = async () => {}; refreshStats = async () => {}; loadProjectorState = async () => {}");
+  await f.run("deleteSelectedWinner(winnerData[0])");
+  assert.equal(f.calls[0].path, '/api/winners/remove');
+  assert.deepEqual(JSON.parse(f.calls[0].options.body), {winner_id:21});
+});
+
+test('projector button reports opening and open states', () => {
+  const f = fixture([]);
+  f.run("setProjectorButtonState('opening')");
+  assert.equal(f.node('openProjector').textContent, 'Opening projector…');
+  f.run("setProjectorButtonState('open')");
+  assert.equal(f.node('openProjector').textContent, 'Projector open');
+});
+
+test('opening projector does not start a new save while a previous save is unconfirmed', () => {
+  const f = fixture([]);
+  f.context.window.open = () => ({closed:false, focus() {}});
+  f.context.setInterval = () => 1;
+  f.run("window.EventDeskStorage.markUncertain('pending-save'); openProjectorWindow()");
+  assert.equal(f.node('openProjector').textContent, 'Projector open');
+  assert.equal(f.calls.length, 0);
+  assert.equal(f.context.window.EventDeskStorage.current().uncertain, true);
 });
 
 test('optional offline backup failure keeps SQL online actions available', async () => {

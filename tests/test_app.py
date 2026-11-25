@@ -118,6 +118,30 @@ class BusinessRulesTests(unittest.TestCase):
         self.assertEqual(app.get_stats()['eligible'], 1)
         self.assertIsNotNone(app.draw_winner('Second prize', 'test'))
 
+    def test_unlimited_prize_draw_and_remove_one_winner(self):
+        app.import_employees([('E910', 'First', 'IT'), ('E911', 'Second', 'Ops')], 'test')
+        with app.db_connection() as db:
+            tokens = [row['qr_token'] for row in db.execute('SELECT qr_token FROM employees ORDER BY id')]
+        for token in tokens:
+            app.scan_action(token, 'checkin', 'test')
+        prize = app.save_prize({'name': 'Phone', 'quantity': 1}, 'admin')
+        first, state = app.draw_configured_prize(prize['id'], 'staff', enforce_quantity=False)
+        self.assertEqual(state, 'drawn')
+        with app.db_connection() as db:
+            db.execute("UPDATE lucky_draw_presentation SET phase='winner_announced'")
+        second, state = app.draw_configured_prize(prize['id'], 'staff', enforce_quantity=False)
+        self.assertEqual(state, 'drawn')
+        self.assertNotEqual(first['employee_id'], second['employee_id'])
+        with app.db_connection() as db:
+            db.execute("UPDATE lucky_draw_presentation SET phase='winner_announced'")
+        app.save_prize({'id': prize['id'], 'name': 'Phone', 'quantity': 1}, 'admin')
+        result = app.remove_draw_winner({'winner_id': first['winner_id']}, 'staff')
+        self.assertEqual(result['removed'], 1)
+        with app.db_connection() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM lucky_draw_winners').fetchone()[0], 1)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM draw_history_removals').fetchone()[0], 1)
+        self.assertEqual(app.get_stats()['eligible'], 1)
+
     def test_wristband_checkin_controls_draw_eligibility(self):
         app.import_employees([('E501','Lost Wristband','IT'),('E502','Unreadable QR','IT'),('E503','Other','IT')], 'test')
         with app.db_connection() as db:
@@ -183,6 +207,33 @@ class BusinessRulesTests(unittest.TestCase):
         self.assertEqual(app.get_projector_state()['prizes'][0]['quantity'], 3)
         with app.db_connection() as db:
             self.assertEqual(db.execute('SELECT COUNT(*) FROM reward_images').fetchone()[0], 1)
+
+    def test_projector_numbers_known_prizes_for_draw_order(self):
+        ids = [app.save_reward_draft({'name': name, 'quantity': 1})['id'] for name in (
+            'Special Gift from MD', 'Bosch 10 kg Front-Loading Washing Machine',
+            'Apple Watch Series 12 GPS')]
+        app.publish_reward_drafts({'ids': ids}, 'staff')
+        self.assertEqual([(item['name'], item['number']) for item in app.get_projector_state()['prizes']], [
+            ('Special Gift from MD', 1),
+            ('Bosch 10 kg Front-Loading Washing Machine', 7),
+            ('Apple Watch Series 12 GPS', 11),
+        ])
+
+    def test_reward_reorder_persists_and_new_prizes_append(self):
+        drafts = [app.save_reward_draft({'name': name, 'quantity': 1})['id'] for name in ('A', 'B', 'C')]
+        app.publish_reward_drafts({'ids': drafts}, 'staff')
+        initial = app.get_projector_state()['prizes']
+        ids = [item['id'] for item in initial]
+        app.reorder_reward_prizes({'ids': [ids[2], ids[0], ids[1]], 'expected_ids': ids}, 'staff')
+        ordered = app.get_projector_state()['prizes']
+        self.assertEqual([(item['name'], item['number']) for item in ordered], [('C', 1), ('A', 2), ('B', 3)])
+        with self.assertRaisesRegex(ValueError, 'changed'):
+            app.reorder_reward_prizes({'ids': ids, 'expected_ids': ids}, 'staff')
+        with self.assertRaisesRegex(ValueError, 'once'):
+            app.reorder_reward_prizes({'ids': [ids[0]] * 3, 'expected_ids': [ids[2], ids[0], ids[1]]}, 'staff')
+        next_draft = app.save_reward_draft({'name': 'D', 'quantity': 1})['id']
+        app.publish_reward_drafts({'ids': [next_draft]}, 'staff')
+        self.assertEqual([item['name'] for item in app.get_projector_state()['prizes']], ['C', 'A', 'B', 'D'])
 
     def test_scale_1700_and_reimport_retains_token(self):
         rows = [(f'E{i:05}',f'Employee {i}',f'Department {i % 15}') for i in range(1700)]
@@ -1084,6 +1135,8 @@ class APITests(unittest.TestCase):
         self.assertIn('UUjJD9Px5vI', markup)
         self.assertIn('frame-src https://www.youtube-nocookie.com',
                       page.headers.get('Content-Security-Policy', ''))
+        for asset in ('digit-draw.js', 'digit-draw.css'):
+            self.assertEqual(anonymous.open(self.base + '/static/' + asset).status, 200)
 
         admin = self.session()
         status, admin_login, _ = self.request(
@@ -1118,8 +1171,19 @@ class APITests(unittest.TestCase):
         self.assertEqual(status, 200, spinning)
         self.assertIn(spinning['phase'], ('spinning', 'winner_selected'))
         self.assertIsNone(spinning['winner'])
+        self.assertEqual(spinning['draw_employee_id'], 'P100')
         status, busy, _ = self.request(staff, '/api/projector/state', {'phase':'preparing','prize':'Another'}, staff_csrf)
         self.assertEqual((status, busy['code']), (409, 'draw_in_progress'))
+
+        status, _, _ = self.request(admin, '/api/settings',
+                                    {'projector_show_employee_id': False}, admin_csrf)
+        self.assertEqual(status, 200)
+        status, private_spinning, _ = self.request(staff, '/api/projector/state')
+        self.assertEqual(status, 200)
+        self.assertIsNone(private_spinning['draw_employee_id'])
+        status, _, _ = self.request(admin, '/api/settings',
+                                    {'projector_show_employee_id': True}, admin_csrf)
+        self.assertEqual(status, 200)
 
         with app.db_connection() as db:
             db.execute("UPDATE lucky_draw_presentation SET reveal_at='2000-01-01T00:00:00+00:00'")

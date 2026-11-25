@@ -36,6 +36,21 @@ class EventPolicyTests(unittest.TestCase):
         self.assertEqual(preflight_mutation(self.envelope('staff', '/api/admin/employees'), self.config,
                                            'https://eventdesk.example', app.parse_session)[0], 403)
 
+    def test_reward_reorder_uses_draw_permissions(self):
+        for role in ('admin', 'staff', 'lucky_draw_operator'):
+            self.assertIsNone(preflight_mutation(self.envelope(role, '/api/rewards/reorder'),
+                                                 self.config, 'https://eventdesk.example', app.parse_session))
+        self.assertEqual(preflight_mutation(self.envelope('checkin_staff', '/api/rewards/reorder'),
+                                           self.config, 'https://eventdesk.example', app.parse_session)[0], 403)
+
+    def test_winner_history_actions_use_draw_permissions(self):
+        for path in ('/api/winners/remove', '/api/winners/history/clear'):
+            for role in ('admin', 'staff', 'lucky_draw_operator'):
+                self.assertIsNone(preflight_mutation(self.envelope(role, path),
+                                                     self.config, 'https://eventdesk.example', app.parse_session))
+            self.assertEqual(preflight_mutation(self.envelope('checkin_staff', path),
+                                               self.config, 'https://eventdesk.example', app.parse_session)[0], 403)
+
     def test_public_session_and_login_keep_the_original_access_policy(self):
         for path in ('/api/staff-session', '/api/login'):
             self.assertIsNone(preflight_mutation({'method': 'POST', 'path': path, 'headers': []},

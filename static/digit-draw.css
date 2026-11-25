@@ -1,0 +1,36 @@
+.employee-id-draw{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:clamp(3px,.55vw,13px);width:min(100%,860px);margin-inline:auto;font-variant-numeric:tabular-nums;user-select:none}
+.employee-id-draw[hidden]{display:none!important}
+.id-digit{min-width:0;aspect-ratio:.76;display:grid;place-items:center;border:2px solid #d9b560;border-radius:10px;background:linear-gradient(155deg,#342144,#100f29);color:#fff5d1;box-shadow:inset 0 2px 8px rgba(255,255,255,.11),0 9px 0 rgba(23,12,29,.65),0 16px 22px rgba(0,0,0,.25);font-family:Consolas,"Arial Black",monospace;font-size:clamp(28px,4.2vw,88px);font-weight:900;line-height:1}
+.id-digit.is-active{border-color:#fff4b5;background:linear-gradient(155deg,#a94234,#5d1e35);transform:translateY(-6px);box-shadow:0 0 24px rgba(255,214,106,.65),0 13px 0 rgba(67,23,37,.7)}
+.id-digit.is-locked{border-color:#ffe9a0;background:linear-gradient(155deg,#67402e,#2c1c35);color:#fff9e7}
+.employee-id-draw.is-pending .id-digit{animation:id-await 1.4s ease-in-out infinite;animation-delay:calc(var(--digit-index,0) * 100ms)}
+@keyframes id-await{50%{border-color:#fff4b5;box-shadow:0 0 18px rgba(255,217,132,.5)}}
+.id-draw-wrap{text-align:center;min-width:0;width:100%;margin:auto}
+.id-draw-label{margin:0 0 clamp(12px,1.5vh,30px);color:#ffe2a4;font-size:clamp(14px,1.25vw,28px);font-weight:850;letter-spacing:.22em}
+.id-draw-hint{margin:clamp(14px,1.8vh,30px) 0 0;color:#e6d4aa;font-size:clamp(12px,.95vw,20px)}
+.draw-view .id-draw-wrap{position:relative;z-index:2;width:min(90%,700px)}
+.draw-view .id-draw-label{color:#7a3029}
+.draw-view .id-digit{background:linear-gradient(155deg,#fff,#ece4d7);border-color:#c9522c;color:#53332b;box-shadow:0 7px 0 #d6c4b3,0 13px 19px rgba(46,33,31,.2);font-size:clamp(27px,4vw,67px)}
+.draw-view .id-digit.is-active{background:#c9522c;color:#fff;border-color:#a7381b;box-shadow:0 0 20px rgba(201,82,44,.5),0 7px 0 #86351e}
+.draw-view .id-digit.is-locked{background:#fff4dd;color:#5b3022;border-color:#a85532}
+.draw-view .id-draw-hint{color:#71534a}
+.draw-view .winner-reveal .employee-id-draw{width:min(88%,550px);margin:18px auto}
+.draw-view .winner-reveal .id-digit{font-size:clamp(24px,3vw,48px)}
+.projector-stage .id-draw-wrap{grid-column:2;grid-row:1;width:min(100%,900px)}
+.projector-stage .id-digit{font-size:clamp(30px,4.3vw,90px)}
+.is-draw-view .projector-stage,.is-draw-view .projector-stage.has-prize-image{grid-template-columns:minmax(0,1fr) minmax(0,1.2fr)}
+.is-draw-view .projector-stage .id-draw-wrap{grid-column:2;grid-row:1}
+.presentation.has-prize-board .projector-stage .id-draw-wrap{grid-column:1;grid-row:2;width:100%}
+.presentation.has-prize-board .projector-stage .id-digit{font-size:clamp(17px,2.1vw,42px)}
+.winner-stage .employee-id-draw{width:min(84vw,1000px);margin:2vh auto}
+.winner-stage .id-digit{font-size:clamp(30px,4.3vw,86px)}
+.is-draw-view .winner-stage .employee-id-draw{width:min(84vw,950px)}
+@media(max-width:720px){.projector-stage .id-draw-wrap,.is-draw-view .projector-stage .id-draw-wrap{grid-column:1;grid-row:2}.projector-stage .id-digit{font-size:clamp(19px,5vw,38px)}.id-draw-hint{display:none}.winner-stage .employee-id-draw{width:90vw}.winner-stage .id-digit{font-size:clamp(18px,5vw,40px)}}
+@media(prefers-reduced-motion:reduce){.employee-id-draw.is-pending .id-digit{animation:none}.id-digit.is-active{transform:none}}
+.is-draw-view .projector-stage,.is-draw-view .projector-stage.has-prize-image{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:clamp(18px,3vh,42px);padding:4vh 4vw}
+.is-draw-view .projector-stage .prize-block{width:min(90vw,980px);flex:none;text-align:center}
+.is-draw-view .projector-stage .prize-visual{width:min(42vw,480px);height:min(30vh,300px)}
+.is-draw-view .projector-stage .id-draw-wrap{width:min(94vw,1000px);flex:none;margin:0}
+.is-draw-view .projector-stage .employee-id-draw{width:100%}
+.is-draw-view .projector-stage .draw-winner-name{margin:clamp(16px,2.5vh,32px) 0 0;color:#fff4d5;font-size:clamp(30px,4vw,76px);font-weight:900;line-height:1.1;text-wrap:balance;text-shadow:0 4px 0 #772b38,0 0 28px rgba(255,202,91,.6)}
+.is-draw-view .projector-stage .draw-id-fallback{margin:16px 0 0;color:#ffe4a2;font:800 clamp(24px,3vw,48px)/1.2 Consolas,monospace;letter-spacing:.08em}

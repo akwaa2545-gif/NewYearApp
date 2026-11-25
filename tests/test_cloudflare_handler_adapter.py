@@ -105,6 +105,9 @@ class HandlerAdapterTests(unittest.TestCase):
         response = self.request('GET', '/static/storage-status.js')
         self.assertEqual(response['status'], 200)
         self.assertIn(b'EventDeskStorage', response['body'])
+        activity = self.request('GET', '/static/activity.js')
+        self.assertEqual(activity['status'], 200)
+        self.assertIn(b'EventDeskActivity', activity['body'])
 
     def test_session_cookie_preserves_secure_httponly_and_samesite_attributes(self):
         response = self.request('POST', '/api/login', {'password': self.admin_password})

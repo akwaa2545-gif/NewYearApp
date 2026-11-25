@@ -59,7 +59,13 @@ DEFAULT_SETTINGS = {
     'projector_theme': 'gold',
     'projector_show_employee_id': True,
 }
-PROJECTOR_SPIN_SECONDS = 5.0
+PROJECTOR_SPIN_SECONDS = 7.0
+PRIZE_SEQUENCE_PATTERNS = (
+    r'Special Gift (?:from|form) MD', r'Yamaha Grand Filano', r'iPhone 18 Pro Max',
+    r'iPad Pro', r'Samsung Galaxy S26 Ultra', r'Bosch.*Dryer',
+    r'Bosch.*Washing Machine', r'Gold Necklace', r'TOSHIBA.*Refrigerator',
+    r'Samsung.*Mini LED.*Smart TV', r'Apple Watch Series 12',
+)
 EMPLOYEE_ID_WIDTH = 7
 PHOTO_MAX_BYTES = 256 * 1024
 PHOTO_PROXY_SLOTS = threading.BoundedSemaphore(4)
@@ -646,6 +652,44 @@ def set_setting(db, key, value, actor):
                (key, json.dumps(value, ensure_ascii=False), now(), actor_name(actor)))
 
 
+def order_reward_prizes(db, prizes):
+    saved = get_setting('reward_order', [], db)
+    if not isinstance(saved, list):
+        saved = []
+    positions = {prize_id: index for index, prize_id in enumerate(saved) if type(prize_id) is int}
+    return sorted(prizes, key=lambda prize: (positions.get(prize['id'], len(positions) + prize['id']), prize['id']))
+
+
+def reorder_reward_prizes(data, actor):
+    ids = data.get('ids')
+    expected = data.get('expected_ids')
+    if not isinstance(ids, list) or not isinstance(expected, list):
+        raise ValueError('Invalid reward order.')
+    if any(type(prize_id) is not int or prize_id <= 0 for prize_id in ids + expected):
+        raise ValueError('Invalid reward order.')
+    if len(ids) != len(set(ids)) or len(expected) != len(set(expected)):
+        raise ValueError('Each reward must appear once.')
+    with db_connection() as db:
+        db.execute('BEGIN IMMEDIATE')
+        try:
+            current = order_reward_prizes(db, [dict(row) for row in db.execute(
+                'SELECT id FROM prizes WHERE active=1 ORDER BY id')])
+            current_ids = [item['id'] for item in current]
+            if expected != current_ids or sorted(ids) != sorted(current_ids):
+                raise ValueError('Reward order changed. Refresh the list and try again.')
+            if get_projector_state(db)['phase'] in ('spinning', 'winner_selected'):
+                raise ValueError('Wait for the current draw to finish.')
+            set_setting(db, 'reward_order', ids, actor)
+            audit(db, actor, 'reward.reordered', 'prizes', None, {'ids': ids})
+            db.execute('UPDATE lucky_draw_presentation SET sequence=sequence+1,updated_at=?,updated_by=? WHERE singleton=1',
+                       (now(), actor_name(actor)))
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+    return {'ids': ids}
+
+
 def _detect_prize_image_type(payload):
     if payload.startswith(b'\x89PNG\r\n\x1a\n'):
         return 'image/png'
@@ -1037,6 +1081,49 @@ def remove_draw_history(payload, actor):
             raise
 
 
+def remove_draw_winner(payload, actor):
+    try:
+        winner_id = int(payload.get('winner_id'))
+    except (TypeError, ValueError):
+        raise ValueError('Choose a winner to remove.') from None
+    with db_connection() as db:
+        db.execute('BEGIN IMMEDIATE')
+        try:
+            presentation = db.execute('SELECT * FROM lucky_draw_presentation WHERE singleton=1').fetchone()
+            if presentation and presentation['phase'] in ('preparing', 'spinning', 'winner_selected'):
+                raise ValueError('A draw is in progress. Wait until it finishes.')
+            row = db.execute('SELECT * FROM lucky_draw_winners WHERE id=?', (winner_id,)).fetchone()
+            if not row:
+                raise ValueError('Winner history changed. Refresh the list.')
+            winner = dict(row)
+            round_row = db.execute('SELECT * FROM lucky_draw_rounds WHERE id=?', (winner['round_id'],)).fetchone()
+            legacy = (db.execute('SELECT * FROM winners WHERE id=?', (winner['legacy_winner_id'],)).fetchone()
+                      if winner['legacy_winner_id'] else None)
+            batch_id, stamp = secrets.token_urlsafe(16), now()
+            snapshot = {'winners': [winner], 'rounds': [dict(round_row)] if round_row else [],
+                        'legacy_winners': [dict(legacy)] if legacy else []}
+            db.execute('''INSERT INTO draw_history_removals(batch_id,history_json,removed_by,reason,removed_at)
+                          VALUES (?,?,?,?,?)''',
+                       (batch_id, json.dumps(snapshot, ensure_ascii=False), actor_name(actor),
+                        'Removed from winner history', stamp))
+            if presentation and presentation['winner_id'] == winner_id:
+                db.execute('''UPDATE lucky_draw_presentation SET sequence=sequence+1,phase='waiting',winner_id=NULL,
+                              prize_name=NULL,round_name=NULL,winner_json=NULL,spin_started_at=NULL,reveal_at=NULL,
+                              updated_at=?,updated_by=? WHERE singleton=1''', (stamp, actor_name(actor)))
+            db.execute('DELETE FROM lucky_draw_winners WHERE id=?', (winner_id,))
+            if round_row:
+                db.execute('DELETE FROM lucky_draw_rounds WHERE id=?', (winner['round_id'],))
+            if legacy:
+                db.execute('DELETE FROM winners WHERE id=?', (winner['legacy_winner_id'],))
+            audit(db, actor, 'draw.winner_removed', 'winner', winner_id,
+                  {'batch_id': batch_id, 'prize_id': winner['prize_id']})
+            db.commit()
+            return {'removed': 1, 'batch_id': batch_id}
+        except Exception:
+            db.rollback()
+            raise
+
+
 def _eligible_sql(db, exclude_employee_id=None):
     clauses = [
         "(e.checked_in_at IS NOT NULL OR EXISTS (SELECT 1 FROM event_checkins c WHERE c.employee_id=e.id))",
@@ -1100,22 +1187,33 @@ def get_projector_state(db=None):
                 phase = 'winner_selected'
         except (TypeError, ValueError):
             pass
-    winner = None
-    if phase in ('winner_selected', 'winner_announced') and result.get('winner_json'):
+    selected_winner = None
+    if result.get('winner_json'):
         try:
-            winner = json.loads(result['winner_json'])
+            selected_winner = json.loads(result['winner_json'])
         except (json.JSONDecodeError, TypeError):
-            winner = None
-    if winner and not bool(get_setting('projector_show_employee_id', True, db)):
+            selected_winner = None
+    if not isinstance(selected_winner, dict):
+        selected_winner = None
+    show_employee_id = bool(get_setting('projector_show_employee_id', True, db))
+    draw_employee_id = (selected_winner.get('employee_id') if selected_winner and show_employee_id
+                        and phase in ('spinning', 'winner_selected') else None)
+    winner = selected_winner if phase in ('winner_selected', 'winner_announced') else None
+    if winner and not show_employee_id:
         winner.pop('employee_id', None)
     predicate, params = _eligible_sql(db)
     eligible = db.execute('SELECT COUNT(*) FROM employees e WHERE ' + predicate, params).fetchone()[0]
     prize_image = get_setting('projector_prize_image', None, db)
     prize_image_valid = (isinstance(prize_image, dict) and
                          bool(re.fullmatch(r'[0-9a-f]{64}', str(prize_image.get('id') or ''))))
-    prizes = [dict(row) for row in db.execute('''SELECT p.id,p.name,p.quantity,
+    prizes = order_reward_prizes(db, [dict(row) for row in db.execute('''SELECT p.id,p.name,p.quantity,
         EXISTS(SELECT 1 FROM reward_images i WHERE i.prize_id=p.id) AS has_image
-        FROM prizes p WHERE p.active=1 ORDER BY p.id''')]
+        FROM prizes p WHERE p.active=1 ORDER BY p.id''')])
+    custom_order = get_setting('reward_order', [], db)
+    for index, item in enumerate(prizes, 1):
+        item['number'] = index if custom_order else next(
+            (position for position, pattern in enumerate(PRIZE_SEQUENCE_PATTERNS, 1)
+             if re.search(pattern, item['name'], re.IGNORECASE)), 0)
     winners_by_prize = {item['id']: [] for item in prizes}
     for entry in db.execute('''SELECT w.id,w.prize_id,e.name,e.employee_id,e.department FROM lucky_draw_winners w
                               JOIN employees e ON e.id=w.employee_id
@@ -1125,7 +1223,7 @@ def get_projector_state(db=None):
         if phase != 'winner_announced' and entry['id'] == result.get('winner_id'):
             continue
         person = {'name': entry['name'], 'department': entry['department']}
-        if bool(get_setting('projector_show_employee_id', True, db)):
+        if show_employee_id:
             person['employee_id'] = entry['employee_id']
         winners_by_prize[entry['prize_id']].append(person)
     for item in prizes:
@@ -1133,12 +1231,13 @@ def get_projector_state(db=None):
     return {
         'sequence': result['sequence'], 'phase': phase, 'prize': result.get('prize_name'),
         'round_name': result.get('round_name'), 'winner': winner,
+        'draw_employee_id': draw_employee_id,
         'spin_started_at': result.get('spin_started_at'), 'reveal_at': result.get('reveal_at'),
         'updated_at': result.get('updated_at'), 'eligible': eligible,
         'event_name': get_setting('event_name', 'Company Party', db),
         'title': get_setting('projector_title', 'Lucky Draw', db),
         'theme': get_setting('projector_theme', 'gold', db),
-        'show_employee_id': bool(get_setting('projector_show_employee_id', True, db)),
+        'show_employee_id': show_employee_id,
         'prize_image_url': (('/api/rewards/image?id=' + str(next((p['id'] for p in prizes if p['name'] == result.get('prize_name') and p['has_image']), '')))
                             if any(p['name'] == result.get('prize_name') and p['has_image'] for p in prizes)
                             else (('/api/projector/prize-image?v=' + prize_image['id']) if prize_image_valid else None)),
@@ -1234,8 +1333,9 @@ def draw_winner(prize, actor, round_label=None):
             raise
 
 
-def draw_configured_prize(prize_id, actor, round_label=None, prevent_overlap=False):
-    """Draw one configured prize unit atomically and enforce its quantity."""
+def draw_configured_prize(prize_id, actor, round_label=None, prevent_overlap=False,
+                          enforce_quantity=True):
+    """Draw one configured prize unit atomically, with an optional quantity cap."""
     with db_connection() as db:
         db.execute('BEGIN IMMEDIATE')
         try:
@@ -1243,7 +1343,7 @@ def draw_configured_prize(prize_id, actor, round_label=None, prevent_overlap=Fal
                 db.rollback()
                 return None, 'draw_in_progress'
             winner, state = _draw_with_db(
-                db, None, actor, prize_id=prize_id, enforce_quantity=True,
+                db, None, actor, prize_id=prize_id, enforce_quantity=enforce_quantity,
                 round_label=round_label)
             if winner is None:
                 db.rollback()
@@ -2226,7 +2326,7 @@ def add_lucky_participant(employee_external_id, actor):
                 db.rollback()
                 return None, 'not_found'
             if is_manager_position(employee_data(employee)['extra'].get('position')):
-                raise ValueError('Managers cannot join the lucky wheel.')
+                raise ValueError('Managers cannot join the lucky draw.')
             existing = db.execute('SELECT active FROM lucky_draw_participants WHERE employee_id=?',
                                   (employee['id'],)).fetchone()
             state = 'already_added' if existing and existing['active'] else 'added'
@@ -2297,8 +2397,6 @@ def save_reward_draft(data):
             drawn = db.execute("SELECT COUNT(*) FROM lucky_draw_winners WHERE prize_id=? AND status='active'", (source_id,)).fetchone()[0]
             if drawn and (action == 'remove' or name != current['name']):
                 raise ValueError('This reward already has winners and cannot be deleted or renamed.')
-            if quantity < drawn:
-                raise ValueError('Quantity cannot be less than the number of winners.')
         if draft_id:
             if not image_changed:
                 image, content_type, image_changed = previous['image'], previous['content_type'], previous['image_changed']
@@ -2334,7 +2432,6 @@ def publish_reward_drafts(data, actor):
                     drawn = db.execute("SELECT COUNT(*) FROM lucky_draw_winners WHERE prize_id=? AND status='active'", (prize_id,)).fetchone()[0]
                     if drawn and (row['action'] == 'remove' or row['name'] != current['name']):
                         raise ValueError(f"Remove the pending change for '{current['name']}': rewards with winners cannot be deleted or renamed.")
-                    if row['quantity'] < drawn: raise ValueError('Quantity cannot be less than the number of winners.')
                     db.execute('UPDATE prizes SET name=?,quantity=?,active=?,updated_at=? WHERE id=?',
                                (row['name'],row['quantity'],row['action'] != 'remove',stamp,prize_id))
                 else:
@@ -2384,8 +2481,6 @@ def save_prize(payload, actor):
                     raise ValueError('Prize not found.')
                 drawn = db.execute("SELECT COUNT(*) FROM lucky_draw_winners WHERE prize_id=? AND status='active'",
                                    (prize_id,)).fetchone()[0]
-                if quantity < drawn:
-                    raise ValueError('Quantity cannot be lower than the number of active winners.')
                 db.execute('UPDATE prizes SET name=?,quantity=?,active=?,updated_at=? WHERE id=?',
                            (name, quantity, active, stamp, prize_id))
                 action = 'prize.updated'
@@ -2807,7 +2902,7 @@ class PartyHandler(BaseHTTPRequestHandler):
         self.end_headers()
         try:
             self.wfile.write(data)
-        except (BrokenPipeError, ConnectionResetError):
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
 
     def respond(self, data, status=200, headers=None):
@@ -2931,13 +3026,17 @@ class PartyHandler(BaseHTTPRequestHandler):
             if path.startswith('/static/'):
                 filename = path[len('/static/'):]
                 if filename not in ('styles.css', 'app.js', 'theme-init.js', 'projector.css',
-                                    'projector.js', 'vendor/html5-qrcode.min.js', 'vendor/jsQR.js',
+                                    'projector.js', 'digit-draw.css', 'digit-draw.js',
+                                    'vendor/html5-qrcode.min.js', 'vendor/jsQR.js',
                                     'camera-controls.js', 'qr-detail-scanner.js', 'qr-detail-worker.js',
-                                    'wristband-support.js', 'employee-portrait.js', 'storage-status.js',
+                                    'wristband-support.js', 'employee-portrait.js', 'storage-status.js', 'activity.js',
                                     'fonts/fc-pride.otf',
+                                    'assets/nameplate/award-plaque.svg', 'assets/nameplate/cinzel-variable.ttf',
+                                    'assets/nameplate/pridi-semibold.ttf',
                                     'assets/thai-temple-fair-background.png', 'assets/hometown-festival-background.png',
                                     'assets/childhood-hometown-background.png',
-                                    'assets/tokin-logo.png'):
+                                    'assets/tokin-logo.png', 'assets/tokin-2070-stage-background.png',
+                                    'assets/tokin-stage-no-title.png'):
                     return self.fail('Not found.', 404)
                 return self.serve_static(FRONTEND / filename)
             if path == '/api/me':
@@ -3127,10 +3226,11 @@ class PartyHandler(BaseHTTPRequestHandler):
                         d.image_changed, CASE WHEN d.image_changed THEN d.image IS NOT NULL ELSE
                         EXISTS(SELECT 1 FROM reward_images i WHERE i.prize_id=d.source_id) END AS has_image
                         FROM reward_drafts d ORDER BY d.id''')]
-                    prizes = [dict(row) for row in db.execute('''SELECT p.id,p.name,p.quantity,
+                    prizes = [dict(row) for row in db.execute('''SELECT p.id,p.name,p.quantity,p.updated_at,
                         EXISTS(SELECT 1 FROM reward_images i WHERE i.prize_id=p.id) AS has_image,
                         (SELECT COUNT(*) FROM lucky_draw_winners w WHERE w.prize_id=p.id AND w.status='active') AS drawn
                         FROM prizes p WHERE p.active=1 ORDER BY p.id''')]
+                    prizes = order_reward_prizes(db, prizes)
                 return self.respond({'drafts': drafts, 'prizes': prizes})
             if path == '/api/rewards/image':
                 if not self.authorize(roles=('lucky_draw_operator',)): return
@@ -3259,7 +3359,7 @@ class PartyHandler(BaseHTTPRequestHandler):
         raw = filename.read_bytes()
         content_type = {
             '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8',
-            '.png': 'image/png', '.otf': 'font/otf',
+            '.png': 'image/png', '.otf': 'font/otf', '.ttf': 'font/ttf', '.svg': 'image/svg+xml',
         }.get(filename.suffix, 'text/javascript; charset=utf-8')
         return self.send_bytes(raw, content_type)
 
@@ -3488,6 +3588,10 @@ class PartyHandler(BaseHTTPRequestHandler):
                 if not person:
                     return self.fail_code('Employee ID was not found.', 'employee_not_found', 404)
                 return self.respond({'person': person, 'state': state})
+            if path == '/api/rewards/reorder':
+                user = self.authorize(modify=True, roles=('lucky_draw_operator',))
+                if not user: return
+                return self.respond(reorder_reward_prizes(self.read_json(), user))
             if path == '/api/rewards/draft':
                 if not self.authorize(modify=True, roles=('lucky_draw_operator',)): return
                 return self.respond(save_reward_draft(self.read_json()))
@@ -3509,7 +3613,8 @@ class PartyHandler(BaseHTTPRequestHandler):
                 prize_id = data.get('prize_id')
                 round_name = data.get('round_name')
                 if prize_id is not None:
-                    winner, state = draw_configured_prize(prize_id, user, round_name, prevent_overlap=True)
+                    winner, state = draw_configured_prize(
+                        prize_id, user, round_name, prevent_overlap=True, enforce_quantity=False)
                 else:
                     winner = draw_winner(data.get('prize'), user, round_name)
                     state = 'drawn' if winner else 'no_eligible'
@@ -3551,6 +3656,14 @@ class PartyHandler(BaseHTTPRequestHandler):
                 if not user: return
                 data = self.read_json()
                 return self.respond(reroll_winner(data.get('winner_id'), data.get('reason'), user))
+            if path == '/api/winners/remove':
+                user = self.authorize(modify=True, roles=('lucky_draw_operator',))
+                if not user: return
+                return self.respond(remove_draw_winner(self.read_json(), user))
+            if path == '/api/winners/history/clear':
+                user = self.authorize(modify=True, roles=('lucky_draw_operator',))
+                if not user: return
+                return self.respond(remove_draw_history(self.read_json(), user))
             if path == '/api/wristbands/generate':
                 user = self.authorize(admin=True, modify=True)
                 if not user: return
