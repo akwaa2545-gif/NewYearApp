@@ -9,13 +9,47 @@
   <script defer src="/static/activity.js"></script>
   <script defer src="/static/storage-status.js"></script>
   <script defer src="/static/digit-draw.js"></script>
+  <script defer src="/static/projector-audio.js"></script>
   <script defer src="/static/projector.js"></script>
 </head>
 <body data-theme="gold">
   <main id="presentation" class="presentation" aria-label="Lucky draw projector">
-    <svg class="scene-art" viewBox="0 0 1670 942" aria-hidden="true" focusable="false">
+    <div class="scene-frame">
+    <img class="scene-art" src="/static/assets/tokin-stage-no-title.png" width="2310" height="1302" alt="YAGEO Tokin - Built into Tomorrow 2027">
+    <svg class="scene-effects" viewBox="0 0 1670 942" aria-hidden="true" focusable="false">
       <defs>
-        <image id="stage-poster" href="/static/assets/tokin-stage-no-title.png" width="1670" height="942"/>
+        <symbol id="award-plaque" viewBox="0 0 600 72">
+          <defs>
+            <linearGradient id="award-gold" x2="0" y2="1">
+              <stop stop-color="#fed26d"/>
+              <stop offset=".15" stop-color="#fee292"/>
+              <stop offset=".41" stop-color="#fec250"/>
+              <stop offset=".65" stop-color="#fcb33f"/>
+              <stop offset="1" stop-color="#d57810"/>
+            </linearGradient>
+            <linearGradient id="award-reflection">
+              <stop stop-color="#bb6200" stop-opacity=".33"/>
+              <stop offset=".13" stop-color="#fee847" stop-opacity=".66"/>
+              <stop offset=".29" stop-color="#be6901" stop-opacity=".26"/>
+              <stop offset=".49" stop-color="#fdfbd3" stop-opacity=".72"/>
+              <stop offset=".55" stop-color="#fdf178" stop-opacity=".63"/>
+              <stop offset=".72" stop-color="#bb6200" stop-opacity=".34"/>
+              <stop offset=".87" stop-color="#fef97c" stop-opacity=".58"/>
+              <stop offset="1" stop-color="#b96201" stop-opacity=".34"/>
+            </linearGradient>
+            <linearGradient id="award-bevel" x2="0" y2="1">
+              <stop stop-color="#fffbe7"/>
+              <stop offset=".23" stop-color="#fee847"/>
+              <stop offset=".69" stop-color="#e48201"/>
+              <stop offset="1" stop-color="#ba6601"/>
+            </linearGradient>
+            <path id="award-outline" d="M32 4H568Q576 4 582 11L596 30Q601 36 596 42L582 61Q576 68 568 68H32Q24 68 18 61L4 42Q-1 36 4 30L18 11Q24 4 32 4Z"/>
+          </defs>
+          <use href="#award-outline" fill="url(#award-gold)"/>
+          <use href="#award-outline" fill="url(#award-reflection)" stroke="url(#award-bevel)" stroke-width="4"/>
+          <path d="M35 10H565M35 62H565" fill="none" stroke="#fdf3c7" stroke-opacity=".68" stroke-width="1"/>
+          <path d="M19 36l5-4 5 4-5 4ZM571 36l5-4 5 4-5 4Z" fill="#fee68c" stroke="#d57810" stroke-width="1"/>
+        </symbol>
         <linearGradient id="ribbon-silk" x2="1" y2=".35" gradientUnits="objectBoundingBox">
           <stop stop-color="#c98825"/><stop offset=".32" stop-color="#ffe594"/>
           <stop offset=".48" stop-color="#fff7d5"/><stop offset=".74" stop-color="#ecc058"/>
@@ -27,31 +61,44 @@
           <path fill="url(#ribbon-silk)" d="M7 -5 Q17 0 25 -16 L29 -20 Q25 -1 15 1 Q11 1 7 -5Z"/>
         </g>
         <path id="star-glint" d="M0 -12 Q1 -2 2 -1 L10 0 Q2 1 1 3 L0 12 Q-1 3 -2 1 L-10 0 Q-2 -1 -1 -3Z"/>
-        <linearGradient id="year-blend" x1="0" y1="0" x2="0" y2="1" gradientUnits="objectBoundingBox">
-          <stop stop-color="black"/><stop offset=".05" stop-color="white"/>
-          <stop offset=".70" stop-color="white"/><stop offset="1" stop-color="black"/>
+        <path id="mystery-glyph" d="M13 43Q42 11 87 8C138 4 171 24 171 58C171 92 148 110 113 126C86 138 71 152 66 171H50C51 139 64 119 93 99C120 80 131 63 131 46C131 26 116 17 91 19C65 21 48 34 41 51L38 59H10L18 51C23 46 24 43 13 43ZM71 202C68 218 53 229 37 228C23 227 15 216 18 203C21 189 35 178 51 178C65 178 74 188 71 202Z"/>
+        <linearGradient id="mystery-metal" gradientUnits="userSpaceOnUse" x1="26" y1="18" x2="141" y2="222">
+          <stop stop-color="#ffedbd"/>
+          <stop offset=".20" stop-color="#ffe278"/>
+          <stop offset=".36" stop-color="#ce720a"/>
+          <stop offset=".47" stop-color="#efaa20"/>
+          <stop offset=".52" stop-color="#fff2a8"/>
+          <stop offset=".58" stop-color="#fff8dd"/>
+          <stop offset=".69" stop-color="#f8c143"/>
+          <stop offset=".84" stop-color="#a94d06"/>
+          <stop offset="1" stop-color="#e6a83a"/>
         </linearGradient>
-        <linearGradient id="sky-blend">
-          <stop stop-color="black"/><stop offset=".17" stop-color="white"/>
-          <stop offset=".83" stop-color="white"/><stop offset="1" stop-color="black"/>
+        <linearGradient id="mystery-side" x2=".72" y2="1">
+          <stop stop-color="#ad5105"/>
+          <stop offset=".46" stop-color="#823506"/>
+          <stop offset=".68" stop-color="#e59517"/>
+          <stop offset="1" stop-color="#813705"/>
         </linearGradient>
-        <mask id="year-window" maskUnits="userSpaceOnUse" x="190" y="245" width="1290" height="265">
-          <rect x="190" y="245" width="1290" height="265" fill="url(#year-blend)"/>
-        </mask>
-        <mask id="sky-window" maskUnits="userSpaceOnUse" x="190" y="245" width="1290" height="265">
-          <rect x="190" y="245" width="1290" height="265" fill="url(#sky-blend)"/>
-        </mask>
+        <linearGradient id="mystery-bevel" x1="0" y1="0" x2=".8" y2=".9">
+          <stop stop-color="#fffbed"/>
+          <stop offset=".31" stop-color="#fff0a5"/>
+          <stop offset=".58" stop-color="#995006"/>
+          <stop offset=".76" stop-color="#ffe181"/>
+          <stop offset="1" stop-color="#bd640b"/>
+        </linearGradient>
+        <radialGradient id="mystery-ambient">
+          <stop stop-color="#9b5212" stop-opacity=".25"/>
+          <stop offset="1" stop-color="#9b5212" stop-opacity="0"/>
+        </radialGradient>
+        <linearGradient id="mystery-shine">
+          <stop stop-color="#fff9da" stop-opacity="0"/>
+          <stop offset=".43" stop-color="#fff9da" stop-opacity=".09"/>
+          <stop offset=".53" stop-color="#fff9da" stop-opacity=".58"/>
+          <stop offset=".72" stop-color="#fff9da" stop-opacity=".13"/>
+          <stop offset="1" stop-color="#fff9da" stop-opacity="0"/>
+        </linearGradient>
+        <clipPath id="mystery-surface"><use href="#mystery-glyph"/></clipPath>
       </defs>
-      <use href="#stage-poster"/>
-      <!-- Scale the printed year and its flourishes together. Extend the surrounding sky to meet it. -->
-      <g mask="url(#year-window)"><g mask="url(#sky-window)">
-        <svg x="190" y="245" width="330" height="105" viewBox="190 245 120 175" preserveAspectRatio="none"><use href="#stage-poster"/></svg>
-        <svg x="520" y="245" width="630" height="105" viewBox="310 245 1050 175" preserveAspectRatio="none"><use href="#stage-poster"/></svg>
-        <svg x="1150" y="245" width="330" height="105" viewBox="1360 245 120 175" preserveAspectRatio="none"><use href="#stage-poster"/></svg>
-        <svg x="190" y="350" width="330" height="160" viewBox="190 420 120 90" preserveAspectRatio="none"><use href="#stage-poster"/></svg>
-        <svg x="520" y="350" width="630" height="160" viewBox="310 420 1050 90" preserveAspectRatio="none"><use href="#stage-poster"/></svg>
-        <svg x="1150" y="350" width="330" height="160" viewBox="1360 420 120 90" preserveAspectRatio="none"><use href="#stage-poster"/></svg>
-      </g></g>
       <g class="journey-glints" fill="none" stroke-linecap="round">
         <path class="road-glint" pathLength="100" d="M883 731 C1020 750 966 760 906 776 S706 840 1004 940"/>
         <path class="ribbon-glint" pathLength="100" d="M30 940 C175 917 350 838 535 808"/>
@@ -76,6 +123,22 @@
         <g transform="translate(1355 326)"><use href="#star-glint"/></g>
       </g>
     </svg>
+    <template id="prizePlaqueLayer">
+      <svg class="prize-plaque" viewBox="0 0 600 72" aria-hidden="true" focusable="false">
+        <use href="#award-plaque"/>
+      </svg>
+    </template>
+    <template id="mysteryPrizeLayer">
+      <svg class="welcome-question" viewBox="0 0 190 244" aria-hidden="true" focusable="false">
+        <ellipse cx="48" cy="236" rx="43" ry="6" fill="url(#mystery-ambient)"/>
+        <use href="#mystery-glyph" transform="translate(4 5)" fill="url(#mystery-side)" stroke="#a65c14" stroke-width="1.2"/>
+        <use href="#mystery-glyph" fill="url(#mystery-metal)" stroke="url(#mystery-bevel)" stroke-width="2.6" stroke-linejoin="round"/>
+        <g clip-path="url(#mystery-surface)">
+          <path d="M5 44Q42 7 97 10Q144 10 162 36M130 47C132 69 114 85 93 102M22 202Q31 183 51 182" fill="none" stroke="#fff7d6" stroke-width="1.5" stroke-linecap="round" opacity=".74"/>
+          <path class="mystery-shine" d="M-131 0h41L-172 235h-41Z" fill="url(#mystery-shine)"/>
+        </g>
+      </svg>
+    </template>
     <div class="scene-content">
     <header class="event-lockup">
       <p class="event-brand">TOKIN</p>
@@ -85,26 +148,28 @@
       <p class="event-year">2027</p>
       <div class="presentation-tools">
         <span id="connectionBadge" class="connection-badge is-connecting"><i></i><span>Connecting</span></span>
-        <button id="soundToggle" class="projector-tool" type="button" aria-pressed="false" title="Sound on">Sound off</button>
         <button id="fullscreenToggle" class="projector-tool" type="button">Full screen</button>
       </div>
     </header>
 
-    <section id="welcomeStage" class="welcome-stage" aria-label="Waiting for staff to choose a prize">
-
-    </section>
+    <div class="prize-viewport"><div id="prizeTrack" class="prize-track"></div></div>
 
     <section id="drawStage" class="projector-stage" hidden>
-      <div class="prize-viewport"><div id="prizeTrack" class="prize-track"></div></div>
       <div class="id-draw-wrap">
         <p class="id-draw-label">EMPLOYEE ID</p>
         <div id="projectorDigits" class="employee-id-draw" aria-label="Seven-digit employee ID"></div>
-        <p id="projectorDrawIdFallback" class="draw-id-fallback" hidden></p>
-        <p id="projectorDrawWinnerName" class="draw-winner-name" aria-live="polite" hidden></p>
-        <p id="projectorWinnerMeta" class="winner-department" hidden></p>
+        <div class="winner-info">
+          <div class="winner-details">
+            <p id="projectorDrawIdFallback" class="draw-id-fallback" hidden></p>
+            <p id="projectorDrawWinnerName" class="draw-winner-name" aria-live="polite" hidden></p>
+            <p id="projectorWinnerMeta" class="winner-department" hidden></p>
+          </div>
+        </div>
       </div>
       <div class="stage-status"><strong id="phaseTitle">Ready</strong><span id="phaseDetail"></span></div>
     </section>
+    </div>
+
     </div>
 
     <section id="winnerStage" class="winner-stage" hidden>
@@ -137,19 +202,11 @@
     </nav>
 
     <div id="celebration" class="celebration" aria-hidden="true"></div>
+    <button id="soundToggle" class="projector-sound-toggle" type="button" hidden>Enable sound</button>
     <footer class="presentation-footer"><span id="eligibleCount">0 eligible employees</span></footer>
   </main>
   <section id="accessScreen" class="access-screen" hidden>
     <div><span class="access-mark">E*</span><h1>Sign in</h1><a href="/">Open sign-in</a></div>
   </section>
-  <iframe
-    id="winnerSoundPlayer"
-    class="winner-sound-player"
-    src="https://www.youtube-nocookie.com/embed/UUjJD9Px5vI?enablejsapi=1&amp;controls=0&amp;disablekb=1&amp;playsinline=1&amp;rel=0"
-    title="Winner celebration sound"
-    tabindex="-1"
-    aria-hidden="true"
-    allow="autoplay; encrypted-media"
-    referrerpolicy="strict-origin-when-cross-origin"></iframe>
 </body>
 </html>

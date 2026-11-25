@@ -24,7 +24,7 @@ function fixture(replies, localStorage = memoryStorage()) {
   const nodes = new Map();
   const node = id => {
     if (!nodes.has(id)) nodes.set(id, {hidden:true, disabled:false, textContent:'', dataset:{},
-      classList:{toggle() {}}, setAttribute() {}});
+      classList:{toggle() {}}, setAttribute() {}, removeAttribute() {}, replaceChildren() {}});
     return nodes.get(id);
   };
   const calls = [];
@@ -588,6 +588,20 @@ test('only a confirmed prize selection signals other windows to refresh', async 
   assert.equal(f.localStorage.getItem('eventdesk-projector-selection'), null);
 });
 
+test('staff restores the saved prize on refresh and publishes a cleared selection', async () => {
+  const f = fixture([{status:200, payload:{phase:'ready_for_next', sequence:7, prize:'Tablet'}},
+    {status:200, payload:{phase:'ready_for_next', sequence:8, prize:null}}]);
+  f.run("rewardData.prizes = [{id:3,name:'Tablet',drawn:0}];");
+  await f.run('loadProjectorState()');
+  assert.equal(f.node('selectedPrizeName').textContent, 'Tablet');
+  await f.run('selectReward(null)');
+  assert.equal(f.node('selectedPrizeName').textContent, 'Select a prize below');
+  assert.deepEqual(JSON.parse(f.calls[1].options.body), {phase:'ready_for_next', prize:null});
+  assert.equal(f.localStorage.getItem('eventdesk-projector-selection'), '8');
+  f.run("renderProjectorState({phase:'ready_for_next',sequence:7,prize:'Tablet'});");
+  assert.equal(f.node('selectedPrizeName').textContent, 'Select a prize below');
+});
+
 test('staff can delete one selected prize winner', async () => {
   const f = fixture([{status:200, payload:{removed:1}}]);
   f.context.window.confirm = () => true;
@@ -603,6 +617,23 @@ test('projector button reports opening and open states', () => {
   assert.equal(f.node('openProjector').textContent, 'Opening projector…');
   f.run("setProjectorButtonState('open')");
   assert.equal(f.node('openProjector').textContent, 'Projector open');
+});
+
+test('staff audio sliders save independent volumes without starting an audio context', () => {
+  const f = fixture([]);
+  let created = 0;
+  f.context.window.AudioContext = class { constructor() { created++; } };
+  f.context.window.addEventListener = () => {};
+  const music = f.node('projectorMusicVolume'), effects = f.node('projectorEffectsVolume');
+  for (const slider of [music, effects]) slider.addEventListener = (_event, callback) => { slider.input = callback; };
+  f.run(fs.readFileSync('static/projector-audio.js', 'utf8'));
+  f.run('bindProjectorVolumes()');
+  assert.equal(music.value, 38);
+  assert.equal(effects.value, 72);
+  music.value = 24; music.input();
+  effects.value = 83; effects.input();
+  assert.deepEqual(JSON.parse(f.localStorage.getItem('eventdesk-projector-volumes')), {music:.24, effects:.83});
+  assert.equal(created, 0);
 });
 
 test('opening projector does not start a new save while a previous save is unconfirmed', () => {

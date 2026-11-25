@@ -29,7 +29,8 @@ function fixture(reducedMotion = false) {
     at(time) { clock = time; const queued = [...frames.values()]; frames.clear(); queued.forEach(cb => cb(clock)); }};
 }
 
-const stops = [5000, 5400, 5800, 6200, 6600, 7000, 8000];
+const stops = [5000, 7270, 9910, 12630, 15190, 17750, 21120];
+const forwardTravel = (from, to) => (to - from + 10) % 10;
 
 test('all strips roll together and settle left to right between their neighbours', () => {
   const f = fixture(), id = '0926809';
@@ -46,9 +47,9 @@ test('all strips roll together and settle left to right between their neighbours
     f.at(stops[i]);
     const after = f.positions();
     assert.deepEqual(after.slice(0, i), before.slice(0, i));
-    assert.ok(after.slice(i + 1).every((row, n) => row > before[i + 1 + n]));
+    assert.ok(after.slice(i + 1).every((row, n) => forwardTravel(before[i + 1 + n], row) > 0));
     const target = Number(id[i]);
-    assert.equal(after[i], 20 + target);
+    assert.equal(after[i], target);
     assert.equal(f.triplet(i), [(target + 9) % 10, target, (target + 1) % 10].join(''));
     assert.equal(f.active(), 6 - i);
     assert.equal(completed, i === 6 ? 1 : 0);
@@ -63,12 +64,31 @@ test('each strip eases in and slows into its target', () => {
     f.draw.play('0926809');
     const travel = time => {
       f.at(time); const from = f.positions()[i];
-      f.at(time + 100); return f.positions()[i] - from;
+      f.at(time + 100); return forwardTravel(from, f.positions()[i]);
     };
     const launch = travel(0), cruise = travel(1000);
-    const brake = travel(stop - 1000), settle = travel(stop - 100);
-    assert.ok(launch > 0 && launch < cruise && cruise > brake && brake > settle && settle > 0);
+    const brake = travel(stop - 1000), approach = travel(stop - 500), settle = travel(stop - 100);
+    assert.ok(launch > 0 && launch < cruise && cruise > brake);
+    assert.ok(brake > approach && approach > settle && settle > 0);
   });
+});
+
+test('later reels cruise through another one to two turns after the previous lock', () => {
+  const f = fixture();
+  f.draw.play('0926809');
+  for (let i = 1; i < stops.length; i++) {
+    const brakeStart = stops[i] - (i === 6 ? 1900 : 1400);
+    const cruiseTime = brakeStart - stops[i - 1];
+    assert.ok(cruiseTime >= 800 && cruiseTime < 1600);
+    f.at(stops[i - 1]);
+    let position = f.positions()[i];
+    for (let elapsed = 80; elapsed <= cruiseTime; elapsed += 80) {
+      f.at(stops[i - 1] + elapsed);
+      const next = f.positions()[i];
+      assert.ok(Math.abs(forwardTravel(position, next) - 1) < 1e-8);
+      position = next;
+    }
+  }
 });
 
 test('reset cancels callbacks, resets every strip, and allows the same draw to replay', () => {

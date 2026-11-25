@@ -368,10 +368,10 @@ input,select,textarea{width:100%;border:1px solid #d8dee9;border-radius:0;backgr
 .draw-view .reward-card-tile .reward-select-button:hover:not(:disabled),.draw-view .reward-card-tile .reward-select-button:focus-visible:not(:disabled){background:#6d4c9b}
 .draw-view .reward-card-tile .reward-select-button:disabled{opacity:.5;cursor:not-allowed}
 .draw-view .reward-row button{min-height:44px;padding:8px 12px}
-.draw-view .draw-history>summary{min-height:52px;display:flex;align-items:center;gap:12px;cursor:pointer;font-size:16px;font-weight:750;list-style:none}
-.draw-view .draw-history>summary::-webkit-details-marker{display:none}
-.draw-view .draw-history>summary::after{content:'+';margin-left:auto;font-size:22px;font-weight:400}
-.draw-view .draw-history[open]>summary::after{content:'−'}
+.draw-view :is(.draw-history,.staff-winner)>summary{min-height:52px;display:flex;align-items:center;gap:12px;cursor:pointer;font-size:16px;font-weight:750;list-style:none}
+.draw-view :is(.draw-history,.staff-winner)>summary::-webkit-details-marker{display:none}
+.draw-view :is(.draw-history,.staff-winner)>summary::after{content:'+';margin-left:auto;font-size:22px;font-weight:400}
+.draw-view :is(.draw-history,.staff-winner)[open]>summary::after{content:'−'}
 .draw-view .reward-dialog{width:min(760px,calc(100vw - 32px));max-height:calc(100dvh - 32px);padding:22px;border:1px solid var(--line);border-radius:12px;background:#fff;color:var(--ink);box-shadow:0 24px 70px rgba(18,27,46,.28);overflow:auto}
 .draw-view .reward-dialog::backdrop{background:rgba(17,28,54,.55)}
 .draw-view .reward-dialog-heading{display:flex;align-items:center;gap:12px}
@@ -563,9 +563,13 @@ input,select,textarea{width:100%;border:1px solid #d8dee9;border-radius:0;backgr
 .draw-view .selected-prize-actions #selectedPrizeAdd{border-color:#513b78;background:#513b78;color:#fff}
 .draw-view .selected-prize-actions button:disabled{opacity:.45;cursor:not-allowed}
 .draw-view .draw-participant .participant-form{margin:8px 0 12px;padding:0;border:0}
-.draw-view .staff-winner{padding:20px 24px;display:grid;gap:14px}
-.draw-view .staff-winner[hidden]{display:none}
-.draw-view .staff-winner h2{margin:0;font-size:20px}
+.draw-view .staff-winner{max-width:800px;margin:0 auto 18px;padding:8px 24px}
+.draw-view .staff-winner>summary{font-size:20px}
+.draw-view .staff-winner[open]{padding-bottom:20px}
+.draw-view .projector-audio-controls{max-width:800px;margin:0 auto 18px}
+.projector-volume-sliders{display:flex;flex-wrap:wrap;gap:12px 24px;padding:0 0 12px}
+.projector-volume-sliders label{display:grid;flex:1 1 200px;gap:5px;color:var(--ink);font-weight:600}
+.projector-volume-sliders input{width:100%;margin:0;accent-color:var(--blue)}
 .draw-view .staff-winner-remove{min-height:36px;padding:7px 12px;font-size:13px}
 .draw-view #selectedPrizeWinners{display:grid;gap:10px}
 .draw-view .staff-winner-entry{display:grid;grid-template-columns:minmax(120px,.75fr) minmax(0,1.35fr) minmax(0,1fr) auto;align-items:center;gap:14px;padding:12px 14px;border:1px solid var(--line);border-radius:10px;background:#fff9f2;text-align:left}

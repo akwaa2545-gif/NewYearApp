@@ -3026,7 +3026,9 @@ class PartyHandler(BaseHTTPRequestHandler):
             if path.startswith('/static/'):
                 filename = path[len('/static/'):]
                 if filename not in ('styles.css', 'app.js', 'theme-init.js', 'projector.css',
-                                    'projector.js', 'digit-draw.css', 'digit-draw.js',
+                                    'projector.js', 'projector-audio.js', 'digit-draw.css', 'digit-draw.js',
+                                    'assets/audio/festival-loop.wav', 'assets/audio/drum-roll.wav',
+                                    'assets/audio/digit-lock.wav', 'assets/audio/victory.wav',
                                     'vendor/html5-qrcode.min.js', 'vendor/jsQR.js',
                                     'camera-controls.js', 'qr-detail-scanner.js', 'qr-detail-worker.js',
                                     'wristband-support.js', 'employee-portrait.js', 'storage-status.js', 'activity.js',
@@ -3360,6 +3362,7 @@ class PartyHandler(BaseHTTPRequestHandler):
         content_type = {
             '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8',
             '.png': 'image/png', '.otf': 'font/otf', '.ttf': 'font/ttf', '.svg': 'image/svg+xml',
+            '.wav': 'audio/wav',
         }.get(filename.suffix, 'text/javascript; charset=utf-8')
         return self.send_bytes(raw, content_type)
 

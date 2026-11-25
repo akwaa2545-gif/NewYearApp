@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const {webcrypto} = require('node:crypto');
 
-function fixture({includeStorage = true, reducedMotion = true} = {}) {
+function fixture({includeStorage = true, reducedMotion = true, audio} = {}) {
   const nodes = new Map(), requests = [];
   const entries = new Map();
   const localStorage = {get length() { return entries.size; }, key:index => [...entries.keys()][index] ?? null,
@@ -14,6 +14,7 @@ function fixture({includeStorage = true, reducedMotion = true} = {}) {
     return {id, children:[], dataset:{}, style:{setProperty() {}}, hidden:false, listeners:{},
       complete:id === 'img', naturalWidth:id === 'img' ? 100 : 0,
       classList:{add:(...names) => names.forEach(name => classes.add(name)), remove:(...names) => names.forEach(name => classes.delete(name)),
+        contains:name => classes.has(name),
         toggle(name, force) { if (force ?? !classes.has(name)) classes.add(name); else classes.delete(name); }},
       addEventListener(name, callback) { this.listeners[name] = callback; }, setAttribute:(name, value) => attributes.set(name, value),
       getAttribute:name => attributes.get(name) ?? null, removeAttribute:name => attributes.delete(name),
@@ -29,6 +30,8 @@ function fixture({includeStorage = true, reducedMotion = true} = {}) {
     };
   }
   const node = id => {
+    if (id === 'prizePlaqueLayer') return {content:{cloneNode:() => element('svg')}};
+    if (id === 'mysteryPrizeLayer') return {content:{cloneNode:() => element('mystery-svg')}};
     for (const group of nodes.get('prizeTrack')?.children || []) {
       for (const part of group.children) {
         if (part.id === id) return part;
@@ -41,10 +44,11 @@ function fixture({includeStorage = true, reducedMotion = true} = {}) {
   const context = vm.createContext({document:{getElementById:node, createElement:element,
     body:element(), addEventListener() {}}, window:{addEventListener() {}, crypto:webcrypto, TextEncoder, localStorage},
     location:{search:''}, URLSearchParams, matchMedia:() => ({matches:reducedMotion}),
-    localStorage, setInterval() {}, clearInterval() {},
+    localStorage, setInterval() {}, clearInterval() {}, setTimeout() { return 1; },
     fetch:async path => { requests.push(path); return {ok:true, status:200, json:async () => ({items:[]})}; },
   });
   const run = code => vm.runInContext(code, context);
+  if (audio) context.window.EventDeskProjectorAudio = {create:() => audio};
   if (includeStorage) run(fs.readFileSync('static/storage-status.js', 'utf8'));
   run(fs.readFileSync('static/digit-draw.js', 'utf8'));
   run(fs.readFileSync('static/projector.js', 'utf8').replace(/\ninitialize\(\);\s*$/, '\n'));
@@ -72,19 +76,24 @@ test('the projector finishes seven mechanical reels before showing an announced 
   f.context.cancelAnimationFrame = () => {};
   f.context.requestAnimationFrame = callback => { tick = callback; return 1; };
   const advance = time => { clock = time; tick(time); };
-  const winner = {employee_id:'2606801', name:'Test guest'};
+  const winner = {employee_id:'2606801', name:'Test guest', department:'Operations'};
   const state = {sequence:2, prize:'Prize one', draw_employee_id:winner.employee_id};
   f.render(f.state({...state, phase:'spinning'}));
   const digits = f.node('projectorDigits').children;
   advance(5000);
   assert.equal(visibleDigit(digits[0]), '2');
   f.render(f.state({...state, phase:'winner_announced', winner}));
-  advance(7999);
+  advance(21279);
   assert.equal(f.node('projectorDrawWinnerName').hidden, true);
-  advance(8000);
+  assert.equal(f.node('projectorWinnerMeta').hidden, true);
+  assert.equal(f.node('drawStage').classList.contains('is-revealed'), false);
+  advance(21280);
   assert.equal(digits.map(visibleDigit).join(''), winner.employee_id);
   assert.equal(f.node('projectorDrawWinnerName').hidden, false);
+  assert.equal(f.node('drawStage').classList.contains('is-revealed'), true);
   assert.equal(f.node('projectorDrawWinnerName').textContent, winner.name);
+  assert.equal(f.node('projectorWinnerMeta').hidden, false);
+  assert.equal(f.node('projectorWinnerMeta').textContent, winner.department);
 });
 
 test('unchanged projector snapshots do not rebuild cards, even when server time advances', () => {
@@ -106,10 +115,10 @@ test('projector stays neutral until staff selects a prize, then shows its draw',
     'Samsung Mini LED Smart TV 4K 55"', 'Apple Watch Series 12 GPS'];
   const prizes = names.map((name, index) => ({id:index + 1, name, quantity:1, has_image:true, winners:[]}));
   f.render(f.state({prizes}));
-  assert.equal(f.node('welcomeStage').hidden, false);
+  assert.equal(f.node('prizeTrack').firstElementChild.children[0].id, 'mystery-svg');
   assert.equal(f.node('prizeBoard').hidden, true);
   f.render(f.state({sequence:2, phase:'ready_for_next', prizes}));
-  assert.equal(f.node('welcomeStage').hidden, false);
+  assert.equal(f.node('drawStage').hidden, true);
   assert.equal(f.node('prizeBoard').hidden, true);
   assert.equal(f.node('prizeBoardRows').children.length, 11);
   assert.equal(f.node('prizeBoardRows').children[0].title, names[10]);
@@ -122,7 +131,7 @@ test('projector stays neutral until staff selects a prize, then shows its draw',
   f.render(f.state({sequence:3, phase:'winner_announced', prize:names[10],
     winner:{name:'Winner', employee_id:'0000001'}, prizes}));
   f.render(f.state({sequence:4, phase:'ready_for_next', prizes}));
-  assert.equal(f.node('welcomeStage').hidden, false);
+  assert.equal(f.node('prizeTrack').firstElementChild.children[0].id, 'mystery-svg');
   assert.equal(f.node('prizeBoard').hidden, true);
   assert.equal(f.run('nextUnfinishedPrize().id'), 10);
 });
@@ -131,9 +140,57 @@ test('a staff-selected prize replaces the waiting screen', () => {
   const f = fixture();
   f.run('openingWelcome = true');
   f.render(f.state({sequence:2, phase:'ready_for_next', prize:'Prize one'}));
-  assert.equal(f.node('welcomeStage').hidden, true);
   assert.equal(f.node('drawStage').hidden, false);
   assert.equal(f.node('projectorPrize').textContent, 'Prize one');
+});
+
+test('mystery and selected prizes share the slide and clearing cancels an incoming prize', () => {
+  const f = fixture({reducedMotion:false}), track = f.node('prizeTrack');
+  const slides = [];
+  track.animate = (frames, timing) => {
+    const slide = {frames, timing, cancel() { this.cancelled = true; }};
+    slides.push(slide);
+    return slide;
+  };
+  f.render(f.state());
+  assert.equal(track.firstElementChild.children.length, 1);
+  assert.equal(track.firstElementChild.children[0].id, 'mystery-svg');
+  f.render(f.state({sequence:2, phase:'ready_for_next', prize:'Prize one'}));
+  assert.equal(track.children.length, 2);
+  assert.deepEqual(Array.from(slides[0].frames, frame => frame.transform), ['translateX(0%)','translateX(100%)']);
+  f.render(f.state({sequence:3, phase:'ready_for_next', prize:null}));
+  assert.equal(slides[0].cancelled, true);
+  slides[0].onfinish();
+  assert.equal(track.children.length, 1);
+  assert.equal(track.firstElementChild.children[0].id, 'mystery-svg');
+
+  f.render(f.state({sequence:4, phase:'ready_for_next', prize:'Prize one'}));
+  slides[1].onfinish();
+  assert.equal(f.node('projectorPrize').textContent, 'Prize one');
+  f.render(f.state({sequence:5, phase:'ready_for_next', prize:null}));
+  slides[2].onfinish();
+  assert.equal(track.children.length, 1);
+  assert.equal(track.firstElementChild.children[0].id, 'mystery-svg');
+  assert.equal(f.node('drawStage').hidden, true);
+});
+
+test('a prize image decoded after clearing the selection never reaches the stage', async () => {
+  const f = fixture(), track = f.node('prizeTrack');
+  const create = f.context.document.createElement;
+  let finishDecode;
+  f.context.document.createElement = tag => {
+    const node = create(tag);
+    if (tag === 'img') node.decode = () => new Promise(resolve => { finishDecode = resolve; });
+    return node;
+  };
+  f.render(f.state());
+  f.render(f.state({sequence:2, phase:'ready_for_next', prize:'Prize one'}));
+  f.render(f.state({sequence:3, phase:'ready_for_next', prize:null}));
+  finishDecode();
+  await f.settle();
+  assert.equal(track.children.length, 1);
+  assert.equal(track.firstElementChild.children[0].id, 'mystery-svg');
+  assert.equal(f.node('drawStage').hidden, true);
 });
 
 test('decoded prize groups share one horizontal animation and coalesce rapid selections', async () => {
@@ -192,7 +249,61 @@ test('a new selection waits for the last spinning digit before moving the prize'
   f.run('openPrize(2)');
   assert.equal(f.node('projectorPrize').textContent,'Tablet');
   assert.equal(f.run('projectorDigits.isSpinning()'),true);
-  tick(8000);
+  tick(20560);
+  assert.equal(f.node('projectorPrize').textContent,'Watch');
+});
+
+test('an early next-prize selection waits for the current winner and fanfare', () => {
+  let fanfares = 0;
+  const f = fixture({reducedMotion:false, audio:{startDraw() {}, reelTick() {}, finishDraw() {}, reset() {},
+    celebrate() { fanfares++; }}});
+  let tick, finishHold;
+  f.context.performance = {now:() => 0};
+  f.context.requestAnimationFrame = callback => { tick = callback; return 1; };
+  f.context.cancelAnimationFrame = () => {};
+  f.context.setTimeout = (callback, delay) => { finishHold = callback; assert.equal(delay, 5000); return 1; };
+  let celebrations = 0;
+  f.run('createConfetti = () => { window.onCelebration(); };');
+  f.context.window.onCelebration = () => celebrations++;
+  const prizes = ['Tablet','Watch','Phone'].map((name,i) => ({id:i+1,name,quantity:1,winners:[]}));
+  const winner = {employee_id:'0000042',name:'Guest',department:'Operations'};
+  f.render(f.state({sequence:1,phase:'spinning',prize:'Tablet',draw_employee_id:winner.employee_id,prizes}));
+  tick(7000);
+  f.render(f.state({sequence:1,phase:'winner_announced',prize:'Tablet',winner,prizes}));
+  f.render(f.state({sequence:2,phase:'ready_for_next',prize:'Watch',prizes}));
+  tick(20560);
+  assert.equal(f.node('projectorPrize').textContent,'Tablet');
+  assert.equal(f.node('projectorDrawWinnerName').hidden,false);
+  assert.equal(f.node('projectorWinnerMeta').textContent,'Operations');
+  assert.equal(celebrations,1);
+  assert.equal(fanfares,1);
+  f.render(f.state({sequence:3,phase:'ready_for_next',prize:'Phone',prizes}));
+  assert.equal(f.node('projectorPrize').textContent,'Tablet');
+  finishHold();
+  assert.equal(f.node('projectorPrize').textContent,'Phone');
+  assert.equal(celebrations,1);
+  assert.equal(fanfares,1);
+});
+
+test('the next snapshot can recover the saved winner when the announcement was missed', () => {
+  const f = fixture({reducedMotion:false});
+  let tick, finishHold;
+  f.context.performance = {now:() => 0};
+  f.context.requestAnimationFrame = callback => { tick = callback; return 1; };
+  f.context.cancelAnimationFrame = () => {};
+  f.context.setTimeout = callback => { finishHold = callback; return 1; };
+  const history = {employee_id:'0000041',name:'Previous winner',department:'IT'};
+  const winner = {employee_id:'0000042',name:'Guest',department:'Operations'};
+  const prizes = ['Tablet','Watch'].map((name,i) => ({id:i+1,name,quantity:1,winners:[]}));
+  prizes[0].winners = [history];
+  f.render(f.state({sequence:1,phase:'spinning',prize:'Tablet',draw_employee_id:winner.employee_id,prizes}));
+  tick(7000);
+  f.render(f.state({sequence:2,phase:'ready_for_next',prize:'Watch',
+    prizes:[{...prizes[0],winners:[history,winner]},prizes[1]]}));
+  tick(20560);
+  assert.equal(f.node('projectorPrize').textContent,'Tablet');
+  assert.equal(f.node('projectorDrawWinnerName').textContent,'Guest');
+  finishHold();
   assert.equal(f.node('projectorPrize').textContent,'Watch');
 });
 
@@ -212,7 +323,7 @@ test('a draw arriving mid-slide starts only after its prize reaches the platform
   animation.onfinish();
   assert.equal(f.node('projectorPrize').textContent,'Watch');
   assert.equal(f.run('projectorDigits.isSpinning()'),true);
-  tick(8000);
+  tick(20560);
   assert.equal(f.node('projectorDrawWinnerName').textContent,'Guest');
 });
 
@@ -221,7 +332,6 @@ test('opening the projector with a saved winner shows the prize instead of the w
   f.run('openingWelcome = true');
   f.render(f.state({sequence:2, phase:'winner_announced', prize:'Prize one',
     winner:{name:'First', employee_id:'0000001'}}));
-  assert.equal(f.node('welcomeStage').hidden, true);
   assert.equal(f.node('drawStage').hidden, false);
   assert.equal(f.node('projectorDrawWinnerName').textContent, 'First');
 });
@@ -413,6 +523,32 @@ test('projector loads deferred storage helper before the draw script', () => {
   assert.match(html, /<script defer src="\/static\/storage-status\.js"><\/script>/);
   assert.ok(html.indexOf('/static/storage-status.js') < html.indexOf('/static/projector.js'));
   assert.ok(html.indexOf('/static/digit-draw.js') < html.indexOf('/static/projector.js'));
+});
+
+test('projector draws the stage poster once, outside the SVG effects layer', () => {
+  const html = fs.readFileSync('static/projector.html', 'utf8');
+  const poster = '/static/assets/tokin-stage-no-title.png';
+  const sources = html.match(/<(?:img|image)\b[^>]*>/gi) || [];
+  const posterElements = sources.filter(tag => tag.includes(`"${poster}"`));
+  assert.equal(posterElements.length, 1);
+  assert.match(posterElements[0], /^<img\b/i);
+  for (const [svg] of html.matchAll(/<svg\b[\s\S]*?<\/svg>/gi)) {
+    assert.ok(!svg.includes(poster), 'SVG effects must not resample the poster');
+  }
+});
+
+test('each prize includes the gold plaque without a second image request', () => {
+  const html = fs.readFileSync('static/projector.html', 'utf8');
+  const artwork = fs.readFileSync('static/assets/nameplate/award-plaque.svg', 'utf8');
+  const symbol = html.match(/<symbol id="award-plaque"[^>]*>([\s\S]*?)<\/symbol>/);
+  const normalize = markup => markup.trim().replace(/>\s+</g, '><').replace(/\s+/g, ' ');
+  assert.ok(symbol);
+  assert.equal(normalize(symbol[1]), normalize(artwork.match(/<svg[^>]*>([\s\S]*)<\/svg>/)[1]));
+  assert.match(html, /<template id="prizePlaqueLayer">\s*<svg[^>]*>\s*<use href="#award-plaque"/);
+
+  const f = fixture();
+  const block = f.run("makePrizeGroup({label:'Grand Prize'}).group");
+  assert.ok(block.children.some(child => child.id === 'svg'));
 });
 
 test('winner label rotation preserves the reward card and image elements', () => {

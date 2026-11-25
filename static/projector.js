@@ -4,22 +4,28 @@ const byId = id => document.getElementById(id);
 if (new URLSearchParams(location.search).get('visual') === 'childhood') document.body.dataset.visual = 'childhood';
 let openingWelcome = new URLSearchParams(location.search).get('intro') === '1';
 const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
-let digitSequence = -1, localDrawWinner = null, audioContext = null;
-let soundEnabled = localStorage.getItem('eventdesk-projector-sound') === 'on';
-let spinAudioResuming = false, lastSpinSoundAt = 0;
-let winnerSoundReady = false, winnerSoundPlaying = false;
+let digitSequence = -1, localDrawWinner = null, initialSequence = null;
+let soundStatus = 'blocked';
+const projectorAudio = window.EventDeskProjectorAudio?.create(status => {
+  soundStatus = status;
+  const button = byId('soundToggle');
+  button.hidden = status === 'enabled';
+  button.textContent = status === 'muted' ? 'Unmute sound' : 'Enable sound';
+});
 let boardPrizes = [], boardPage = 0, boardWinnerIndex = 0, boardSelected = '';
 let posterIntroPlayed = false;
 let refreshInFlight = false, lastRenderedSequence = -1, lastRenderedPhase = -1;
 let queuedSelectionSequence = -1;
 let requestedPrize = null, displayedPrize = null, prizeAnimation = null;
 let deferredProjectorState = null, pendingReelState = null;
+const WINNER_HOLD_MS = 5000;
+let winnerHoldTimer = null;
 let boardSignature = '', boardCards = [], lastRenderedSignature = '';
 let projectorCsrf = '', projectorDrawing = false, currentPhase = 'waiting', pendingPrize = null;
 let currentView = 'overview', latestState = null, selectedPrizeId = null, localPrizePreviewId = null;
 let projectorActivity = null, projectorReady = false, statePollTimer = null;
 const projectorDigits = window.EventDeskDigitDraw?.create(byId('projectorDigits'),
-  {reducedMotion:reducedMotion.matches, onTick:playSpinTick});
+  {reducedMotion:reducedMotion.matches, onTick:projectorAudio?.reelTick});
 const projectorWinnerDigits = window.EventDeskDigitDraw?.create(byId('projectorWinnerId'), {reducedMotion:true});
 
 function projectorBackgroundAllowed() { return projectorReady && projectorActivity?.isActive() === true; }
@@ -144,118 +150,44 @@ function createConfetti() {
     host.append(item);
   }
 }
-function setSoundButton() {
-  const button = byId('soundToggle');
-  button.setAttribute('aria-pressed', String(soundEnabled));
-  button.textContent = soundEnabled ? 'Sound on' : 'Sound off';
-  button.title = soundEnabled ? 'Mute celebration sound' : 'Enable celebration sound';
+function applyDeferredProjectorState() {
+  if (winnerHoldTimer !== null || !deferredProjectorState) return;
+  const next = deferredProjectorState;
+  deferredProjectorState = null;
+  render(next);
 }
-function sendWinnerSoundCommand(func, args = []) {
-  const player = byId('winnerSoundPlayer');
-  if (!winnerSoundReady || !player?.contentWindow) return false;
-  player.contentWindow.postMessage(JSON.stringify({event: 'command', func, args}), 'https://www.youtube-nocookie.com');
-  return true;
+
+function winnerFromNextSnapshot(state, id, next) {
+  if (next.show_employee_id === false) return null;
+  // The server may move on between polls. New saved winners for this prize
+  // still carry the exact employee ID that the current reels landed on.
+  const winnersFor = snapshot => snapshot.prizes?.find(prize => prize.name === state.prize)?.winners || [];
+  const matchId = winner => winner.employee_id === id;
+  const latest = winnersFor(next).filter(matchId);
+  return latest.length > winnersFor(state).filter(matchId).length ? latest.at(-1) : null;
 }
-function stopWinnerSound() {
-  sendWinnerSoundCommand('pauseVideo');
-  sendWinnerSoundCommand('seekTo', [0, true]);
-  winnerSoundPlaying = false;
-}
-function primeWinnerSound() {
-  if (!sendWinnerSoundCommand('mute')) return;
-  sendWinnerSoundCommand('playVideo');
-  setTimeout(() => {
-    if (winnerSoundPlaying) return;
-    sendWinnerSoundCommand('pauseVideo');
-    sendWinnerSoundCommand('seekTo', [0, true]);
-    if (soundEnabled) sendWinnerSoundCommand('unMute');
-  }, 180);
-}
-function unlockSpinAudio() {
-  if (localStorage.getItem('eventdesk-projector-sound') === 'off') return;
-  try {
-    audioContext ??= new AudioContext();
-    if (audioContext.state === 'suspended') void audioContext.resume().catch(() => {});
-  } catch (_) {}
-}
-function playSpinTick({index, phase, progress}) {
-  if (localStorage.getItem('eventdesk-projector-sound') === 'off') return;
-  const now = Date.now();
-  if (phase === 'spin' && now - lastSpinSoundAt < 95) return;
-  lastSpinSoundAt = now;
-  try {
-    audioContext ??= new AudioContext();
-    if (audioContext.state !== 'running') {
-      if (!spinAudioResuming) {
-        spinAudioResuming = true;
-        void audioContext.resume().catch(() => {}).finally(() => { spinAudioResuming = false; });
-      }
-      return;
-    }
-    const start = audioContext.currentTime;
-    const tone = (frequency, endFrequency, level, length, type, delay = 0) => {
-      const oscillator = audioContext.createOscillator(), gain = audioContext.createGain();
-      const at = start + delay;
-      oscillator.type = type;
-      oscillator.frequency.setValueAtTime(frequency, at);
-      oscillator.frequency.exponentialRampToValueAtTime(endFrequency, at + length);
-      gain.gain.setValueAtTime(.0001, at);
-      gain.gain.exponentialRampToValueAtTime(level, at + .007);
-      gain.gain.exponentialRampToValueAtTime(.0001, at + length);
-      oscillator.connect(gain).connect(audioContext.destination);
-      oscillator.start(at); oscillator.stop(at + length + .01);
-    };
-    if (phase === 'stop') {
-      tone(630 + index * 42, 410 + index * 42, .055, .18, 'triangle');
-      tone(940 + index * 36, 750 + index * 36, .024, .24, 'sine', .035);
-    } else if (phase === 'almost') {
-      tone(490 + index * 30, 370 + index * 30, .035, .15, 'sine');
-    } else {
-      const pitch = 560 + index * 23 - progress * 150;
-      tone(pitch, pitch * .67, .026, .055 + progress * .025, 'triangle');
-    }
-  } catch (_) {}
-}
-function playFallbackCelebration() {
-  try {
-    audioContext ??= new AudioContext();
-    const start = audioContext.currentTime;
-    [523.25, 659.25, 783.99, 1046.5].forEach((frequency, index) => {
-      const oscillator = audioContext.createOscillator(), gain = audioContext.createGain();
-      oscillator.frequency.value = frequency;
-      gain.gain.setValueAtTime(.0001, start + index * .1);
-      gain.gain.exponentialRampToValueAtTime(.16, start + index * .1 + .02);
-      gain.gain.exponentialRampToValueAtTime(.0001, start + index * .1 + .34);
-      oscillator.connect(gain).connect(audioContext.destination);
-      oscillator.start(start + index * .1); oscillator.stop(start + index * .1 + .36);
-    });
-  } catch (_) {}
-}
-function playCelebration() {
-  if (!soundEnabled) return;
-  sendWinnerSoundCommand('seekTo', [0, true]);
-  sendWinnerSoundCommand('unMute');
-  sendWinnerSoundCommand('setVolume', [100]);
-  if (sendWinnerSoundCommand('playVideo')) winnerSoundPlaying = true;
-  else playFallbackCelebration();
-}
+
 function startDigitDraw(state) {
   if (digitSequence !== state.sequence) {
     digitSequence = state.sequence;
     projectorDigits?.reset();
+    projectorAudio?.startDraw();
   }
   const id = state.show_employee_id === false ? '' : state.draw_employee_id || state.winner?.employee_id
     || (localDrawWinner?.prizeId === selectedPrizeId && localDrawWinner.sequence === state.sequence
       ? localDrawWinner.employeeId : '');
   if (!id) { projectorDigits?.pending(); return; }
   projectorDigits?.play(id, () => {
-    if (deferredProjectorState) {
+    projectorAudio?.finishDraw();
+    if (latestState?.sequence === state.sequence) {
       const next = deferredProjectorState;
-      deferredProjectorState = null;
-      render(next);
-      return;
+      if (next) {
+        const winner = latestState.winner || winnerFromNextSnapshot(latestState, id, next);
+        if (winner) render({...latestState, phase:'winner_announced', winner,
+          show_employee_id:latestState.show_employee_id !== false && next.show_employee_id !== false});
+      } else if (latestState.phase === 'winner_announced') renderView();
     }
-    if (latestState?.sequence === state.sequence && latestState.phase === 'winner_announced') renderView();
+    applyDeferredProjectorState();
   });
 }
 function showWinner(state) {
@@ -276,11 +208,21 @@ function showWinner(state) {
   text('winnerRound', winner.round_name || state.round_name || '');
   byId('winnerStage').hidden = true; byId('drawStage').hidden = false;
   if (byId('winnerStage').dataset.sequence !== String(state.sequence)) {
-    byId('winnerStage').dataset.sequence = String(state.sequence); createConfetti(); playCelebration();
+    byId('winnerStage').dataset.sequence = String(state.sequence);
+    createConfetti();
+    // Opening a saved result should not replay its fanfare.
+    if (digitSequence === state.sequence || Number(state.sequence) !== initialSequence) projectorAudio?.celebrate();
+    if (digitSequence === state.sequence && !reducedMotion.matches) {
+      // Give the reveal and the five-second victory cue time before moving on.
+      winnerHoldTimer = setTimeout(() => {
+        winnerHoldTimer = null;
+        if (deferredProjectorState) applyDeferredProjectorState();
+        else renderView();
+      }, WINNER_HOLD_MS);
+    }
   }
 }
 function showDraw(state) {
-  stopWinnerSound();
   byId('winnerStage').hidden = true; byId('drawStage').hidden = false;
   byId('drawStage').classList.remove('is-revealed');
   byId('projectorWinnerMeta').hidden = true;
@@ -288,10 +230,11 @@ function showDraw(state) {
   byId('projectorDrawIdFallback').hidden = true;
   const copy = phaseCopy(state.phase); text('phaseTitle', copy[0]); text('phaseDetail', copy[1]);
   if (state.phase === 'spinning' || state.phase === 'winner_selected') startDigitDraw(state);
-  else { projectorDigits?.reset(); projectorWinnerDigits?.reset(); }
+  else { projectorAudio?.reset(); projectorDigits?.reset(); projectorWinnerDigits?.reset(); }
 }
 function fitPrizeNameplate(label) {
   if (!label.clientWidth || !label.firstChild) return;
+  label.classList.remove('can-wrap');
   label.style.removeProperty('--letter-scale');
   const range = document.createRange();
   range.selectNodeContents(label);
@@ -300,7 +243,15 @@ function fitPrizeNameplate(label) {
     return ink.width <= label.clientWidth * .83 + 1 && ink.height <= label.clientHeight * .72;
   };
   if (fits()) return;
-  let small = .016, large = .06;
+  // Try one line down to a projector-readable size before allowing a second line.
+  let small = .044, large = .06;
+  label.style.setProperty('--letter-scale', small);
+  if (!fits()) {
+    label.classList.add('can-wrap');
+    label.style.removeProperty('--letter-scale');
+    if (fits()) return;
+    small = .016;
+  }
   for (let i = 0; i < 7; i++) {
     const middle = (small + large) / 2;
     label.style.setProperty('--letter-scale', middle);
@@ -311,12 +262,21 @@ function fitPrizeNameplate(label) {
 }
 
 function makePrizeGroup(request) {
-  const group = document.createElement('div'), visual = document.createElement('div');
+  const group = document.createElement('div');
+  group.className = 'prize-block';
+  if (request.id === null) {
+    group.setAttribute('role', 'img');
+    group.setAttribute('aria-label', 'Mystery prize. Waiting for staff to select a prize.');
+    group.append(byId('mysteryPrizeLayer').content.cloneNode(true));
+    return {group};
+  }
+  const visual = document.createElement('div');
   const label = document.createElement('strong'), number = document.createElement('span');
   const round = document.createElement('small');
   const image = request.image || document.createElement('img');
-  group.className = 'prize-block';
   visual.className = 'prize-visual';
+  if (/^(?:Grand Filano 2026|Motorcycle)$/i.test(request.label)) visual.classList.add('prize-visual--motorcycle');
+  if (/^(?:Samsung (?:Mini LED )?55-inch TV|TV)$/i.test(request.label)) visual.classList.add('prize-visual--tv');
   visual.hidden = !request.image;
   label.className = 'prize-nameplate';
   label.lang = /[\u0e00-\u0e7f]/u.test(request.label) ? 'th' : 'en';
@@ -325,7 +285,7 @@ function makePrizeGroup(request) {
   number.textContent = request.number;
   round.textContent = request.round;
   visual.append(image);
-  group.append(visual, number, label, round);
+  group.append(visual, number, label, round, byId('prizePlaqueLayer').content.cloneNode(true));
   return {group, visual, image, label, number, round};
 }
 
@@ -338,13 +298,15 @@ function presentPrize(request) {
     outgoing?.remove();
     parts.group.classList.remove('is-incoming');
     parts.group.removeAttribute('aria-hidden');
-    parts.visual.id = 'projectorPrizeVisual';
-    parts.image.id = 'projectorPrizeImage';
-    parts.label.id = 'projectorPrize';
-    parts.number.id = 'projectorPrizeNumber';
-    parts.round.id = 'projectorRound';
+    if (parts.label) {
+      parts.visual.id = 'projectorPrizeVisual';
+      parts.image.id = 'projectorPrizeImage';
+      parts.label.id = 'projectorPrize';
+      parts.number.id = 'projectorPrizeNumber';
+      parts.round.id = 'projectorRound';
+      selectedPrizeId = request.id;
+    }
     displayedPrize = request;
-    selectedPrizeId = request.id;
     const winnerImage = byId('winnerPrizeImage');
     if (request.image) { winnerImage.src = request.url; winnerImage.alt = parts.image.alt; }
     else winnerImage.removeAttribute('src');
@@ -357,7 +319,7 @@ function presentPrize(request) {
     parts.group.setAttribute('aria-hidden', 'true');
   }
   track.append(parts.group);
-  fitPrizeNameplate(parts.label);
+  if (parts.label) fitPrizeNameplate(parts.label);
   if (!slide) { commit(); return; }
   track.classList.add('is-sliding');
   // The track fills the viewport. Percentage translations follow its live width,
@@ -412,13 +374,6 @@ function renderPrizeGroup(id, state, number) {
   presentPrize(request);
 }
 
-function clearPrizeGroup() {
-  prizeAnimation?.cancel();
-  prizeAnimation = requestedPrize = displayedPrize = pendingReelState = null;
-  const track = byId('prizeTrack');
-  track.classList.remove('is-sliding');
-  track.replaceChildren();
-}
 function createRewardCard(prize, index) {
     const row = document.createElement('button'); row.type = 'button'; row.className = 'reward-card';
     row.title = prize.name;
@@ -544,7 +499,7 @@ function renderPrizeBoard() {
   byId('boardPrevious').hidden = pages <= 1; byId('boardNext').hidden = pages <= 1;
 }
 function openPrize(id) {
-  if (projectorDrawing || pendingPrize || projectorDigits?.isSpinning() || ['spinning','winner_selected'].includes(currentPhase)) return;
+  if (projectorDrawing || pendingPrize || winnerHoldTimer !== null || projectorDigits?.isSpinning() || ['spinning','winner_selected'].includes(currentPhase)) return;
   localPrizePreviewId = id; currentView = 'draw'; text('projectorMessage', '');
   renderView();
 }
@@ -554,7 +509,8 @@ function startShow() {
 }
 function advancePrize() {
   const index = boardPrizes.findIndex(prize => prize.id === selectedPrizeId);
-  if (index < 0 || projectorDrawing || pendingPrize || projectorDigits?.isSpinning() || ['spinning','winner_selected'].includes(currentPhase)) return;
+  if (index < 0 || projectorDrawing || pendingPrize || winnerHoldTimer !== null || projectorDigits?.isSpinning()
+      || ['spinning','winner_selected'].includes(currentPhase)) return;
   const next = boardPrizes[index + 1];
   if (next) openPrize(next.id);
   else { currentView = 'overview'; renderView(); }
@@ -564,18 +520,29 @@ function renderView() {
   byId('presentation').scrollTop = 0;
   if (latestState.phase === 'waiting' || latestState.prize) openingWelcome = false;
   const preview = boardPrizes.find(prize => prize.id === localPrizePreviewId);
-  currentView = preview ? 'draw' : latestState.phase === 'waiting' || !latestState.prize ? 'welcome' : 'draw';
-  const selected = preview || boardPrizes.find(prize => prize.name === latestState.prize);
-  if (!selected && currentView === 'draw') currentView = 'overview';
-  byId('welcomeStage').hidden = currentView !== 'welcome';
+  const selected = preview || (latestState.phase !== 'waiting' && boardPrizes.find(prize => prize.name === latestState.prize));
+  currentView = selected ? 'draw' : 'welcome';
   byId('presentation').classList.toggle('is-welcome', currentView === 'welcome');
   byId('presentation').classList.toggle('is-overview', currentView === 'overview');
   byId('presentation').classList.toggle('is-draw-view', currentView === 'draw');
   byId('drawNavigation').hidden = true;
   renderPrizeBoard();
-  if (currentView !== 'draw') {
-    if (requestedPrize) clearPrizeGroup();
-    projectorDigits?.reset(); byId('drawStage').hidden = true; byId('winnerStage').hidden = true; return;
+  if (!selected) {
+    if (prizeAnimation && requestedPrize?.id !== null) {
+      prizeAnimation.cancel();
+      prizeAnimation = null;
+      const track = byId('prizeTrack');
+      track.children[1].remove();
+      track.classList.remove('is-sliding');
+    }
+    pendingReelState = null;
+    byId('drawStage').hidden = true;
+    byId('drawStage').classList.remove('is-revealed');
+    byId('winnerStage').hidden = true;
+    projectorDigits?.reset();
+    projectorAudio?.reset();
+    renderPrizeGroup(null, {});
+    return;
   }
   byId('drawStage').hidden = false;
   const active = !preview && selected.name === latestState.prize;
@@ -595,7 +562,8 @@ function renderView() {
     } else showDraw(displayState);
   }
   const status = window.EventDeskStorage?.current(), retry = Boolean(pendingPrize) || status?.uncertain === true;
-  const busy = switching || projectorDigits?.isSpinning() || projectorDrawing || Boolean(pendingPrize) || ['spinning','winner_selected'].includes(currentPhase);
+  const busy = switching || winnerHoldTimer !== null || projectorDigits?.isSpinning() || projectorDrawing
+    || Boolean(pendingPrize) || ['spinning','winner_selected'].includes(currentPhase);
   const nextToDraw = nextUnfinishedPrize();
   text('showProgress', nextToDraw ? `Up next: #${prizeNumber(nextToDraw) || boardPrizes.length}` : 'No prizes yet');
   const helperReady = typeof window.EventDeskStorage?.prepareOperation === 'function';
@@ -644,7 +612,8 @@ async function requestProjectorDraw(prize) {
 
 async function drawProjectorPrize(prize) {
   projectorActivity?.touch();
-  if (projectorDrawing || !prize || prizeAnimation || (requestedPrize && displayedPrize?.id !== requestedPrize.id)) return;
+  if (projectorDrawing || !prize || prizeAnimation || winnerHoldTimer !== null
+      || (requestedPrize && displayedPrize?.id !== requestedPrize.id)) return;
   projectorDrawing = true; renderView(); text('projectorMessage', 'Starting draw…');
   try {
     const result = await requestProjectorDraw(prize);
@@ -657,17 +626,20 @@ async function drawProjectorPrize(prize) {
 }
 function render(state) {
   const sequence = Number(state.sequence ?? 0);
+  initialSequence ??= sequence;
   const phase = phaseOrder[state.phase] ?? 0;
   if (sequence < lastRenderedSequence || (sequence === lastRenderedSequence && phase < lastRenderedPhase)) return;
   // The server may advance while the audience is still watching the final reel.
-  if (projectorDigits?.isSpinning() && sequence > digitSequence) {
+  if ((projectorDigits?.isSpinning() || winnerHoldTimer !== null) && sequence > lastRenderedSequence) {
     if (!deferredProjectorState || sequence > deferredProjectorState.sequence ||
         (sequence === deferredProjectorState.sequence && phase >= phaseOrder[deferredProjectorState.phase])) {
       deferredProjectorState = state;
     }
     return;
   }
-  if (sequence > lastRenderedSequence && state.prize && state.phase !== 'waiting') localPrizePreviewId = null;
+  if (sequence > lastRenderedSequence && (state.prize === null || (state.prize && state.phase !== 'waiting'))) {
+    localPrizePreviewId = null;
+  }
   const {server_time, ...displayState} = state;
   const signature = JSON.stringify(displayState);
   if (signature === lastRenderedSignature) { latestState = state; return; }
@@ -695,18 +667,10 @@ async function loadState() {
 }
 async function initialize() {
   startProjectorBackground();
-  const plaque = document.createElement('img');
-  plaque.src = '/static/assets/nameplate/award-plaque.svg';
   const nameplateReady = Promise.allSettled([
-    document.fonts?.load('750 32px Cinzel', 'AWARD'),
-    document.fonts?.load('600 32px Pridi', 'รางวัล'),
-    plaque.decode?.()
+    document.fonts?.load('700 32px Cinzel', 'AWARD'),
+    document.fonts?.load('600 32px Pridi', 'รางวัล')
   ]);
-  byId('winnerSoundPlayer').addEventListener('load', () => {
-    winnerSoundReady = true;
-    if (soundEnabled && byId('winnerStage').hidden) primeWinnerSound();
-  });
-  setSoundButton();
   try {
     let me = await fetch('/api/me', {credentials: 'same-origin'}).then(response => response.json());
     if (!me.authenticated) {
@@ -721,6 +685,7 @@ async function initialize() {
     await nameplateReady;
     // Bootstrap the display once even if automatic connections cannot be started.
     projectorReady = true;
+    projectorAudio?.open();
     if (projectorStatePollingAllowed()) await refreshProjectorState();
     else {
       await loadState();
@@ -728,20 +693,25 @@ async function initialize() {
     }
   } catch (_) { setConnection('offline', 'Disconnected'); }
 }
-byId('soundToggle').addEventListener('click', async () => {
-  soundEnabled = !soundEnabled; localStorage.setItem('eventdesk-projector-sound', soundEnabled ? 'on' : 'off'); setSoundButton();
-  if (soundEnabled) {
-    try { audioContext ??= new AudioContext(); await audioContext.resume(); } catch (_) {}
-    if (byId('winnerStage').hidden) primeWinnerSound(); else playCelebration();
-  }
-  else stopWinnerSound();
+byId('soundToggle').addEventListener('click', () => {
+  if (soundStatus === 'blocked') projectorAudio?.unlock();
+  else projectorAudio?.toggle();
 });
-document.addEventListener('pointerdown', unlockSpinAudio);
-document.addEventListener('keydown', unlockSpinAudio);
+document.addEventListener('pointerdown', event => {
+  if (event.target !== byId('soundToggle')) projectorAudio?.unlock();
+});
 document.addEventListener('keydown', event => {
-  if (event.key?.toLowerCase() !== 'm' || event.repeat || event.altKey || event.ctrlKey || event.metaKey) return;
-  event.preventDefault();
-  byId('soundToggle').click();
+  if (event.key?.toLowerCase() === 'm' && !event.repeat && !event.altKey && !event.ctrlKey && !event.metaKey) {
+    event.preventDefault();
+    projectorAudio?.toggle();
+  } else projectorAudio?.unlock();
+});
+window.addEventListener('storage', event => {
+  if (event.key === window.EventDeskProjectorAudio?.volumeKey) projectorAudio.reloadVolumes();
+});
+window.addEventListener('pagehide', () => projectorAudio?.close());
+window.addEventListener('pageshow', event => {
+  if (event.persisted && projectorReady) projectorAudio?.open();
 });
 byId('fullscreenToggle').addEventListener('click', async () => {
   try { if (document.fullscreenElement) await document.exitFullscreen(); else await document.documentElement.requestFullscreen(); } catch (_) {}
@@ -759,7 +729,7 @@ window.addEventListener('online', () => {
 window.addEventListener('offline', () => {
   if (projectorStatePollingAllowed()) setConnection('offline', 'Offline');
 });
-window.addEventListener('beforeunload', () => { stopWinnerSound(); pauseProjectorBackground(); });
+window.addEventListener('beforeunload', () => { projectorAudio?.close(); pauseProjectorBackground(); });
 window.EventDeskStorage?.subscribe(() => { if (latestState) renderView(); });
 // Rotate winner labels in existing cards; keep their images attached.
 setInterval(() => { if (projectorBackgroundAllowed() && boardPrizes.length) { boardWinnerIndex += 1; renderPrizeBoard(); } }, 8000);

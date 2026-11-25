@@ -31,43 +31,49 @@ body {
   background: linear-gradient(#88bae9, #dce9fa 55%, #f9dfab);
   text-align: center;
 }
+.scene-frame {
+  --stage-width: 1670;
+  --stage-height: 942;
+  --art-width: 2310;
+  --art-height: 1302;
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  /* Fit the original stage, increasing its scale only if the extended artwork
+     would otherwise fall short of an edge of the viewport. */
+  width: max(
+    min(100%, 100dvh * var(--stage-width) / var(--stage-height)),
+    100% * var(--stage-width) / var(--art-width),
+    100dvh * var(--stage-width) / var(--art-height)
+  );
+  aspect-ratio: var(--stage-width) / var(--stage-height);
+  transform: translate(-50%, -50%);
+}
 .scene-art {
   position: absolute;
   left: 50%;
   top: 50%;
-  width: max(100%, 177.283dvh);
+  width: calc(100% * var(--art-width) / var(--stage-width));
   height: auto;
   transform: translate(-50%, -50%);
-  pointer-events: none;
 }
+.scene-effects, .scene-content {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.scene-art, .scene-effects { pointer-events: none; }
 .scene-content {
   container-type: size;
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
-  width: max(100vw, 177.283dvh);
-  aspect-ratio: 1670 / 942;
 }
-.projector-stage { position: absolute; inset: 35% 4% 2%; }
-.prize-visual {
-  position: relative;
-  isolation: isolate;
-  width: 47cqw;
-  height: 25cqh;
-  animation: prize-float 6s ease-in-out infinite alternate;
-}
-.prize-visual::before {
-  content: "";
-  position: absolute;
-  z-index: -1;
-  inset: 4% 8% -3%;
-  background: radial-gradient(ellipse, rgb(255 247 207 / .71), transparent 69%);
-}
+.projector-stage { position: absolute; inset: 0; }
 .prize-visual img {
+  display: block;
   width: 100%;
   height: 100%;
   object-fit: contain;
+  object-position: center bottom;
   filter: drop-shadow(0 .7cqh .65cqh rgb(32 47 65 / .24));
 }
 .id-draw-wrap { margin: 1.6cqh auto 0; }
@@ -102,20 +108,6 @@ body {
   animation: card-sheen .48s ease-out calc(var(--digit-index) * 65ms) both;
 }
 @keyframes card-sheen { from { transform: translateX(-110%); } to { transform: translateX(110%); } }
-.draw-winner-name, .winner-department {
-  width: fit-content;
-  max-width: 88%;
-  margin: .6cqh auto 0;
-  padding: 0 .35em;
-  background: rgb(255 250 235 / .93);
-  border-radius: .15em;
-  overflow-wrap: anywhere;
-  animation: reveal .45s ease-out both;
-}
-.draw-winner-name { margin-top: 1.8cqh; font-size: 3.1cqw; font-weight: 750; line-height: 1.2; }
-.winner-department { font-size: 1.95cqw; line-height: 1.25; animation-delay: .09s; }
-.draw-id-fallback { margin: .5cqh 0; font-size: 2.6cqw; font-weight: bold; }
-@keyframes reveal { from { opacity: 0; transform: translateY(.65cqh); } }
 .celebration { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
 .confetti {
   position: absolute;
@@ -133,8 +125,20 @@ body {
   to { opacity: 0; transform: translate(var(--drift), 78cqh) rotate(200deg); }
 }
 .presentation-tools, .presentation-footer, .draw-navigation, .reward-overview,
-.stage-status, .id-draw-label, #projectorPrizeNumber, #projectorRound,
-.winner-sound-player { display: none; }
+.stage-status, .id-draw-label, #projectorPrizeNumber, #projectorRound { display: none; }
+.projector-sound-toggle {
+  position: absolute;
+  z-index: 2;
+  right: 1rem;
+  bottom: 1rem;
+  padding: .65rem 1rem;
+  border: 1px solid #f4c45c;
+  border-radius: .4rem;
+  background: #062859;
+  color: #fff1bd;
+  font: 600 1rem "Segoe UI", sans-serif;
+  cursor: pointer;
+}
 .access-screen { padding: 2em; text-align: center; background: white; }
 .journey-glints { stroke: #fff3ca; stroke-width: 3; pointer-events: none; }
 .road-glint, .ribbon-glint {
@@ -178,9 +182,6 @@ body {
 }
 @keyframes year-light { to { text-shadow: 0 1px #fff7cb, 0 0 .2em #ffde9ac7; } }
 @keyframes prize-float { to { transform: translateY(-.55cqh); } }
-@media (max-aspect-ratio: 5/4) {
-  .scene-art { width: 133%; top: auto; bottom: 0; left: auto; right: -6%; transform: none; }
-}
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; }
   .floating-ribbons, .sky-glitter { display: none; }
@@ -194,76 +195,115 @@ body {
 .scene-content::before,
 .scene-content::after { display: none; }
 .presentation:not(.is-draw-view) .event-lockup { display: none; }
-.projector-stage { inset: 0; }
+.welcome-question {
+  grid-area: 1 / 1 / 3;
+  align-self: start;
+  display: block;
+  height: 26cqh;
+  width: auto;
+  margin-top: 2.2cqh;
+}
+.mystery-shine { animation: mystery-reflection 10s ease-in-out infinite; }
+@keyframes mystery-reflection {
+  0%, 42% { transform: translateX(0); }
+  78%, 100% { transform: translateX(410px); }
+}
+/* Position the live layers in the clear space below the printed year and
+   over the seven printed frames. All coordinates are relative to the poster. */
 .prize-viewport {
   position: absolute;
-  inset: 36.5% 0 auto;
-  height: 34.3%;
+  inset: 35.1% 0 29.1%;
   overflow: hidden;
 }
 .prize-track { position: absolute; inset: 0; }
 .prize-block {
   position: absolute;
-  inset: 1cqh 0 .7cqh;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: flex-end;
-  gap: .45cqh;
+  --plate-width: 22.5cqw;
+  inset: .65cqh 0 1.15cqh;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) 9.75cqh;
+  justify-items: center;
+  row-gap: .65cqh;
 }
 .prize-block.is-incoming { transform: translateX(-100%); }
 .prize-track.is-sliding .prize-visual { animation-play-state: paused; }
 .prize-visual {
-  flex: 0 1 28cqh;
+  grid-area: 1 / 1;
   min-height: 0;
-  width: 63cqw;
+  width: 66cqw;
+  /* Give the prize room to grow while seating its base above the plaque. */
+  height: calc(100% + var(--prize-height-extension, 4.2cqh));
+  translate: 0 var(--prize-y-offset, 1.35cqh);
+  animation: prize-float 6s ease-in-out infinite alternate;
 }
-.prize-visual::before { display: none; }
+/* These prize photos include transparent padding below the tires and TV feet. */
+.prize-visual--motorcycle {
+  --prize-height-extension: 6.7cqh;
+  --prize-y-offset: 1.1cqh;
+}
+.prize-visual--tv {
+  --prize-height-extension: 7.2cqh;
+  --prize-y-offset: 4.05cqh;
+}
+.prize-plaque, .prize-nameplate {
+  grid-area: 2 / 1;
+  /* The artwork's podium face ends just above the printed digit frames. */
+  align-self: end;
+  width: var(--plate-width);
+  height: calc(var(--plate-width) * .12);
+  translate: -.4cqw;
+}
+.prize-plaque {
+  filter: drop-shadow(0 .1cqh .1cqh #88470b50);
+  pointer-events: none;
+}
 .prize-nameplate {
-  --plate-width: min(28.5cqw, 90vw);
-  flex: none;
+  z-index: 1;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: var(--plate-width);
-  height: calc(var(--plate-width) / 5);
   padding: calc(var(--plate-width) * .018) calc(var(--plate-width) * .085);
-  background: url("/static/assets/nameplate/award-plaque.svg") center / contain no-repeat;
-  filter: drop-shadow(0 .18cqh .17cqh #61411f52);
   color: #082b60;
-  font: 750 calc(var(--plate-width) * var(--letter-scale, .06))/1.25 Cinzel, Pridi, Georgia, serif;
+  font: 700 calc(var(--plate-width) * var(--letter-scale, .06))/1.25 Cinzel, Pridi, Georgia, serif;
   font-synthesis: none;
   text-align: center;
   text-transform: uppercase;
   letter-spacing: .04em;
-  text-shadow: 0 .035em #fff3d2;
-  text-wrap: balance;
+  text-shadow: 0 .035em #fee292;
+  white-space: nowrap;
   overflow-wrap: anywhere;
 }
+.prize-nameplate.can-wrap { white-space: normal; text-wrap: balance; }
 .prize-nameplate:lang(th) { line-height: 1.38; letter-spacing: .012em; }
 .id-draw-wrap {
+  --reel-width: 46.1%;
+  --reel-shadow: inset 0 0 .5cqw #041d48, 0 .16cqh .3cqh #8e581f70;
+  --reel-highlight: rgb(255 228 164 / .28);
   position: absolute;
-  top: 71.2%;
+  top: 71.3%;
   left: 0;
   width: 100%;
   margin: 0;
 }
+#projectorDigits, .winner-info {
+  width: var(--reel-width);
+  transform: translateX(-.4cqw);
+}
 #projectorDigits {
-  width: 46.1%;
-  gap: .3cqw;
+  gap: .16cqw;
   margin: 0 auto;
-  transform: translate(-.4cqw, -.45cqh);
+}
+#projectorDigits .id-digit, .winner-details {
+  border: max(1px, .16cqw) solid #f4c45c;
+  border-radius: 1.05cqw;
+  background: linear-gradient(#062859, #0750a1 30%, #073b84 60%, #062450);
+  box-shadow: var(--reel-shadow);
+  color: #ffd675;
 }
 #projectorDigits .id-digit {
   flex: 1;
   width: 0;
-  /* Browser chrome can crop the bottom of the poster in a windowed presentation. */
-  height: clamp(13cqh, calc(15.6cqh - max(0px, 50cqh - 50dvh)), 15.6cqh);
-  border: max(1px, .16cqw) solid #f4c45c;
-  border-radius: 1.05cqw;
-  background: linear-gradient(#062859, #0750a1 30%, #073b84 60%, #062450);
-  box-shadow: inset 0 0 .5cqw #041d48, 0 .16cqh .3cqh #8e581f70;
-  color: #ffd675;
+  height: 12.1cqh;
   font-family: Georgia, 'Times New Roman', serif;
   font-variant-numeric: lining-nums tabular-nums;
   font-style: italic;
@@ -300,34 +340,45 @@ body {
   content: "";
   position: absolute;
   inset: var(--band-edge) 7%;
-  border-block: 1px solid rgb(255 228 164 / .28);
+  border-block: 1px solid var(--reel-highlight);
   pointer-events: none;
 }
-.draw-winner-name,
-.winner-department {
+.winner-info {
+  display: grid;
+  align-items: start;
+  height: 14cqh;
+  margin: .8cqh auto 0;
+}
+.winner-details {
   position: relative;
-  width: fit-content;
-  max-width: 72%;
-  margin: 0 auto;
-  padding: 0 .32em;
-  background: rgb(255 250 237 / .95);
-  color: #082b66;
+  min-width: 0;
+  padding: .95cqh 1.15cqw;
+  overflow-wrap: anywhere;
+  text-wrap: balance;
+  visibility: hidden;
 }
-.draw-winner-name { margin-top: 1.1cqh; font-size: 2.65cqw; }
-.winner-department { margin-top: .3cqh; font-size: 1.6cqw; }
-
-@media (min-aspect-ratio: 19/10) {
-  .draw-winner-name { margin-top: .35cqh; }
-  .draw-winner-name, .winner-department { line-height: 1.08; }
+.winner-details::before {
+  content: "";
+  position: absolute;
+  inset: .46cqh 2%;
+  border-block: 1px solid var(--reel-highlight);
+  border-radius: inherit;
+  pointer-events: none;
 }
-
-@media (max-aspect-ratio: 5/4) {
-  .scene-art {
-    width: max(100%, 177.283dvh);
-    top: 50%;
-    bottom: auto;
-    left: 50%;
-    right: auto;
-    transform: translate(-50%, -50%);
-  }
+.is-revealed .winner-details {
+  visibility: visible;
+  animation: reveal-winner-panel .55s ease-out;
 }
+@keyframes reveal-winner-panel {
+  from { opacity: 0; transform: translateY(1.2cqh); }
+  55% { box-shadow: var(--reel-shadow), 0 0 .85cqh rgb(255 209 105 / .68); }
+}
+.winner-details p { margin: 0; }
+.draw-winner-name {
+  font: 700 3.7cqh/1.15 Cinzel, Pridi, Georgia, serif;
+  font-synthesis: none;
+  text-shadow: 0 .08cqh .18cqh #041d48;
+}
+.winner-department { color: white; font-size: 2.25cqh; line-height: 1.2; }
+.winner-details .winner-department { margin-top: .4cqh; }
+.draw-id-fallback { font-size: 2cqh; font-weight: bold; }

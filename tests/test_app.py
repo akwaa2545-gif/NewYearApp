@@ -1120,6 +1120,23 @@ class APITests(unittest.TestCase):
                 ('1234567',)).fetchone()
         self.assertIsNone(employee['checked_in_at'])
 
+    def test_projector_audio_and_typefaces_are_public_static_assets(self):
+        assets = {
+            'projector-audio.js': 'text/javascript',
+            'assets/nameplate/cinzel-variable.ttf': 'font/ttf',
+            'assets/nameplate/pridi-semibold.ttf': 'font/ttf',
+            'assets/audio/festival-loop.wav': 'audio/wav',
+            'assets/audio/drum-roll.wav': 'audio/wav',
+            'assets/audio/digit-lock.wav': 'audio/wav',
+            'assets/audio/victory.wav': 'audio/wav',
+        }
+        anonymous = self.session()
+        for path, content_type in assets.items():
+            with self.subTest(path=path), anonymous.open(self.base + '/static/' + path) as asset:
+                self.assertEqual(asset.status, 200)
+                self.assertEqual(asset.headers.get_content_type(), content_type)
+                self.assertEqual(asset.read(), (app.FRONTEND / path).read_bytes())
+
     def test_projector_state_is_authorized_recoverable_and_privacy_aware(self):
         with app.db_connection() as db:
             app.set_projector_state(db, 'waiting', 'test')
@@ -1131,10 +1148,8 @@ class APITests(unittest.TestCase):
         markup = page.read().decode('utf-8')
         self.assertIn('id="presentation"', markup)
         self.assertNotIn('app-header', markup)
-        self.assertIn('id="winnerSoundPlayer"', markup)
-        self.assertIn('UUjJD9Px5vI', markup)
-        self.assertIn('frame-src https://www.youtube-nocookie.com',
-                      page.headers.get('Content-Security-Policy', ''))
+        self.assertIn('src="/static/projector-audio.js"', markup)
+        self.assertNotIn('id="winnerSoundPlayer"', markup)
         for asset in ('digit-draw.js', 'digit-draw.css'):
             self.assertEqual(anonymous.open(self.base + '/static/' + asset).status, 200)
 

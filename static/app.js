@@ -5,6 +5,7 @@ const state = {csrf:null, profile:null, view:'home', workspaces:{}, drawing:fals
 let appActivity = null, appPollTimer = null, appRefreshInFlight = false;
 let projectorPollTimer = null, projectorRefreshInFlight = false;
 let staffProjectorState = null;
+let staffPrizeSelectionPending = false;
 let rewardData = {drafts:[], prizes:[]};
 let winnerData = [];
 let projectorPopup = null, projectorPopupTimer = null;
@@ -53,7 +54,7 @@ function updateDrawAvailability() {
   const button = $('spinButton');
   const status = window.EventDeskStorage?.current();
   const phase = staffProjectorState?.phase;
-  const busy = state.drawing || state.winnerHistorySaving || state.rewardReordering || state.prizeImageUploading || status?.offline === true
+  const busy = staffPrizeSelectionPending || state.drawing || state.winnerHistorySaving || state.rewardReordering || state.prizeImageUploading || status?.offline === true
     || Boolean(phase && ['preparing','spinning','winner_selected'].includes(phase));
   const selectedPrize = rewardData.prizes.find(item => String(item.id) === String(state.selectedPrizeId));
   if (button) {
@@ -61,10 +62,13 @@ function updateDrawAvailability() {
     button.textContent = status?.uncertain ? 'Retry same draw' : selectedPrize?.drawn > 0 ? 'Draw again' : 'Draw';
   }
   document.querySelectorAll('.reward-select-button').forEach(selectButton => {
-    selectButton.disabled = state.drawing || state.winnerHistorySaving || state.rewardReordering;
+    selectButton.disabled = staffPrizeSelectionPending || state.drawing || state.winnerHistorySaving || state.rewardReordering;
   });
   const nextButton = $('readyNextDraw');
   if (nextButton) nextButton.disabled = busy || status?.uncertain === true || !nextSelectablePrize();
+  const clearButton = $('selectedPrizeClear');
+  clearButton.hidden = !selectedPrize;
+  clearButton.disabled = busy;
   const pending = selectedPrize && rewardData.drafts.find(draft => Number(draft.source_id) === Number(selectedPrize.id));
   $('selectedPrizeAdd').disabled = state.drawing || state.winnerHistorySaving || state.rewardReordering;
   $('selectedPrizeEdit').disabled = !selectedPrize || state.drawing || state.winnerHistorySaving || state.rewardReordering;
@@ -731,12 +735,28 @@ function renderSelectedPrize() {
   renderSelectedPrizeWinners();
   updateDrawAvailability();
 }
+function syncStaffPrizeSelection() {
+  if (staffPrizeSelectionPending || staffProjectorState?.prize === undefined) return;
+  const prize = staffProjectorState.phase === 'waiting' ? null
+    : rewardData.prizes.find(item => item.name === staffProjectorState.prize);
+  state.selectedPrizeId = prize?.id ?? null;
+}
 async function selectReward(item) {
-  state.selectedPrizeId = item.id;
+  if (staffPrizeSelectionPending || state.drawing) return;
+  const previousId = state.selectedPrizeId;
+  staffPrizeSelectionPending = true;
+  state.selectedPrizeId = item?.id ?? null;
   renderSelectedPrize();
-  $('selectedPrize').scrollIntoView({behavior:'smooth', block:'center'});
-  try { await setProjectorPhase('ready_for_next', {prize:item.name}, false); }
-  catch (error) { toast(error.message, 'error'); }
+  if (item) $('selectedPrize').scrollIntoView({behavior:'smooth', block:'center'});
+  try { await setProjectorPhase('ready_for_next', {prize:item?.name ?? null}, false); }
+  catch (error) {
+    state.selectedPrizeId = previousId;
+    toast(error.message, 'error');
+  } finally {
+    staffPrizeSelectionPending = false;
+    syncStaffPrizeSelection();
+    renderSelectedPrize();
+  }
 }
 async function advanceSelectedPrize() {
   const next = nextSelectablePrize();
@@ -849,6 +869,7 @@ function renderPublishedRewards() {
     card.querySelector('.reward-tile-number').textContent = String(index + 1);
     return card;
   }));
+  syncStaffPrizeSelection();
   renderSelectedPrize();
 }
 async function loadRewards() {
@@ -1709,8 +1730,12 @@ async function removePrizeImage() {
 }
 
 function renderProjectorState(payload) {
+  if (payload.sequence < staffProjectorState?.sequence) return;
   staffProjectorState = payload;
-  updateDrawAvailability();
+  const previousId = state.selectedPrizeId;
+  syncStaffPrizeSelection();
+  if (previousId !== state.selectedPrizeId) renderSelectedPrize();
+  else updateDrawAvailability();
   renderPrizeImageControl(payload);
 }
 
@@ -1722,7 +1747,7 @@ async function loadProjectorState() {
 
 function connectProjectorState() {
   if (!appBackgroundAllowed() || state.view !== 'draw' || !state.profile) return;
-  if (projectorPollTimer === null) projectorPollTimer = setInterval(refreshDrawProjector, 1000);
+  if (projectorPollTimer === null) projectorPollTimer = setInterval(refreshDrawProjector, 3000);
 }
 
 function stopProjectorPolling() {
@@ -1755,6 +1780,23 @@ function setProjectorButtonState(mode) {
   button.classList.toggle('projector-open', mode === 'open');
   button.textContent = mode === 'opening' ? 'Opening projector…'
     : mode === 'open' ? 'Projector open' : 'Open projector';
+}
+
+function bindProjectorVolumes() {
+  const audio = window.EventDeskProjectorAudio;
+  if (!audio) return;
+  const sliders = {music:$('projectorMusicVolume'), effects:$('projectorEffectsVolume')};
+  const update = () => {
+    const volumes = audio.readVolumes();
+    for (const [key, slider] of Object.entries(sliders)) slider.value = Math.round(volumes[key] * 100);
+  };
+  update();
+  for (const slider of Object.values(sliders)) {
+    slider.addEventListener('input', () => {
+      audio.saveVolumes({music:Number(sliders.music.value) / 100, effects:Number(sliders.effects.value) / 100});
+    });
+  }
+  window.addEventListener('storage', event => { if (event.key === audio.volumeKey) update(); });
 }
 
 function openProjectorWindow() {
@@ -1903,9 +1945,11 @@ async function initialize() {
   $('selectedPrizeAdd').addEventListener('click', openAddPrize);
   $('selectedPrizeEdit').addEventListener('click', editSelectedPrize);
   $('selectedPrizeDelete').addEventListener('click', deleteSelectedPrize);
+  $('selectedPrizeClear').addEventListener('click', () => selectReward(null));
   $('prizeImageInput').addEventListener('change', uploadPrizeImage);
   $('removePrizeImage').addEventListener('click', removePrizeImage);
   $('openProjector').addEventListener('click', openProjectorWindow);
+  bindProjectorVolumes();
   $('readyNextDraw').addEventListener('click', advanceSelectedPrize);
   $('refreshDraw').addEventListener('click', refreshDrawPage);
   $('projectorSettingsForm').addEventListener('submit', saveProjectorSettings);

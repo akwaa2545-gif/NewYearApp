@@ -99,6 +99,27 @@ class BuildBundleTests(unittest.TestCase):
         self.assertEqual((self.output / 'vendor.zip').read_bytes(), vendor)
         self.assertEqual((self.output / 'static-manifest.json').read_bytes(), manifest)
 
+    def test_projector_assets_are_required_and_have_portable_mime_types(self):
+        static = self.root / 'static'
+        (static / 'projector.html').write_text('<title>Projector</title>', encoding='utf-8')
+        with self.assertRaisesRegex(ValueError, 'Missing required projector assets: projector-audio.js'):
+            self.build()
+        expected = {
+            'projector-audio.js': 'text/javascript; charset=utf-8',
+            'assets/nameplate/cinzel-variable.ttf': 'font/ttf',
+            'assets/nameplate/pridi-semibold.ttf': 'font/ttf',
+            'assets/audio/festival-loop.wav': 'audio/wav',
+            'assets/audio/drum-roll.wav': 'audio/wav',
+            'assets/audio/digit-lock.wav': 'audio/wav',
+            'assets/audio/victory.wav': 'audio/wav',
+        }
+        for key in expected:
+            path = static / key
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(key.encode())
+        manifest = self.build()['static_manifest']
+        self.assertEqual({key: manifest[key]['type'] for key in expected}, expected)
+
     def test_output_cannot_be_written_into_public_static_files(self):
         with self.assertRaisesRegex(ValueError, 'static'):
             build_bundle(self.root, self.root / 'static' / 'deployment', self.packages)

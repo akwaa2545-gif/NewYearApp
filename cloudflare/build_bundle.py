@@ -22,6 +22,20 @@ RUNTIME_FILES = (
     'event_primary.py', 'event_runtime.py', 'event_policy.py', 'replica.py', 'sql_online.py',
 )
 PACKAGES = ('qrcode', 'openpyxl', 'et_xmlfile')
+PROJECTOR_ASSETS = (
+    'projector-audio.js',
+    'assets/nameplate/cinzel-variable.ttf',
+    'assets/nameplate/pridi-semibold.ttf',
+    'assets/audio/festival-loop.wav',
+    'assets/audio/drum-roll.wav',
+    'assets/audio/digit-lock.wav',
+    'assets/audio/victory.wav',
+)
+ASSET_MIME_TYPES = {
+    '.js': 'text/javascript; charset=utf-8',
+    '.ttf': 'font/ttf',
+    '.wav': 'audio/wav',
+}
 
 
 def _package_roots():
@@ -79,9 +93,10 @@ def _write_assets(root, output):
             (output / chunk_file).write_bytes(data[offset:offset + CHUNK_BYTES])
             chunks[key] = {'key': key, 'file': chunk_file}
             keys.append(key)
+        content_type = ASSET_MIME_TYPES.get(file.suffix.lower()) or mimetypes.guess_type(file.name)[0]
         manifest[file.relative_to(folder).as_posix()] = {
             'size': len(data),
-            'type': mimetypes.guess_type(file.name)[0] or 'application/octet-stream',
+            'type': content_type or 'application/octet-stream',
             'keys': keys,
         }
     return manifest, list(chunks.values())
@@ -103,6 +118,11 @@ def build_bundle(project_root=None, output=None, package_roots=None):
     destination = (destination if destination.is_absolute() else root / destination).resolve()
     if destination.is_relative_to((root / 'static').resolve()):
         raise ValueError('Build output must be outside the public static folder.')
+    static = root / 'static'
+    if (static / 'projector.html').is_file():
+        missing = [path for path in PROJECTOR_ASSETS if not (static / path).is_file()]
+        if missing:
+            raise ValueError('Missing required projector assets: ' + ', '.join(missing))
     dependencies = _package_roots() if package_roots is None else package_roots
     destination.mkdir(parents=True, exist_ok=True)
     _write_vendor(root, destination, dependencies)

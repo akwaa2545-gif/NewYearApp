@@ -10,7 +10,7 @@ Backup maintenance runs only after SQL data changes, at most once per 60 seconds
 
 The scanner uses html5-qrcode and jsQR. Employee details appear in a popup; successful check-in shows a green animation. Employees who already checked in have an information-only popup. The interface supports reduced motion.
 
-Staff and projector pages pause automatic requests when hidden, unfocused, or inactive for two minutes. Returning focus, typing, or tapping resumes updates. An unattended projector keeps its last display and shows **Paused · Tap to reconnect**.
+Staff pages pause automatic requests when hidden, unfocused, or inactive for two minutes. A visible projector checks for prize and draw updates every three seconds, including while staff use another window. Hiding the projector pauses these checks. Showing it again fetches the latest state immediately.
 
 ## Run locally
 
@@ -33,11 +33,16 @@ To try the included synthetic employees, stop the server and run this once after
 
 On macOS or Linux, use `python3` to create the environment and `.venv/bin/python` for the remaining commands.
 
+For a password-free rehearsal on this PC, run `.venv\Scripts\python.exe scripts\run_local_demo.py` instead of setup and app.py. It listens only on `127.0.0.1` and uses a separate `data/local-demo/` database with 11 checked-in sample guests and 11 rehearsal prizes. The seven-digit employee ID draw and projector are available without signing in; this does not change the hosted website or the event database.
+
 ## Use the app
 
 - Staff can scan a QR code, use a handheld barcode scanner, or enter an employee ID.
 - Administrators manage employees, attendance, wristband status, and prizes.
 - The projector view is available at `/projector`.
+- Open the projector from the staff draw page to show a colorful **TOKIN NEW YEAR 2070** welcome animation. Staff clicks **Next: prize list** to show the published prize poster, then **Draw next prize** to reveal employee ID digits, starting at prize #11 and moving down to #1. The projector shows the audience display without staff controls. Reduced-motion settings keep the welcome and prize poster still. A still prize layout preview is at `prize-postcard/projector-stage-preview.png`.
+- During a draw, seven employee ID boxes stop one by one from left to right. The server selects and saves the winner before the visual reveal. Keep **Show employee ID** enabled in screen settings to display the number on the projector.
+- Open **Projector audio** on the staff draw page to adjust music and effects independently for projector windows in the same browser. If playback is blocked, click **Enable sound** on the projector. Press **M** on the projector to mute or unmute. The app preloads its original, royalty-free audio files from the same server as the projector.
 - Camera streaming requires HTTPS or localhost. On LAN HTTP, use the photo picker, handheld scanner, or manual entry. Focus, zoom, and torch controls depend on the browser and camera.
 
 The server listens on all interfaces by default. Set `PARTY_HOST=127.0.0.1` to restrict it to this computer. The default port is `8080`.

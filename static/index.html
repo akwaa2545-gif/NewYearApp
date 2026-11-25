@@ -13,6 +13,7 @@
   <script defer src="/static/employee-portrait.js"></script>
   <script defer src="/static/storage-status.js"></script>
   <script defer src="/static/activity.js"></script>
+  <script defer src="/static/projector-audio.js"></script>
   <script defer src="/static/app.js"></script>
 </head>
 <body data-view="home">
@@ -137,10 +138,20 @@
       <section id="view-draw" class="view draw-view">
         <div class="view-heading"><button class="back-button" type="button" data-view="home">Home</button><div><p><span id="drawEligibleSummary">-</span> can win · <span id="drawParticipantCount">-</span> employees</p></div><span class="mode-badge amber"><span id="drawEligible">-</span> can win</span></div>
         <div class="draw-grid staff-draw-grid">
-          <div class="panel draw-controls selected-prize-panel"><form id="drawForm"><select id="prizeSelect" aria-label="Selected prize" hidden=""><option value="">Select a reward</option></select><div id="selectedPrize" class="selected-prize" aria-live="polite"><img id="selectedPrizeImage" alt="" hidden=""><strong id="selectedPrizeName">Select a prize below</strong><span id="selectedPrizeProgress"></span></div><div class="selected-prize-actions"><button id="selectedPrizeAdd" type="button">+ Add prize</button><button id="selectedPrizeEdit" type="button" disabled="">Edit</button><button id="selectedPrizeDelete" type="button" disabled="">Delete</button></div><p id="drawMessage" class="form-message" role="status"></p><button id="clearOldPending" type="button" class="button secondary" hidden>Clear old pending save</button><div hidden><label for="roundInput">Round <span>optional</span></label><input id="roundInput" maxlength="100" placeholder="Round name"><label for="prizeImageInput">Prize picture <span>optional</span></label><div class="prize-image-picker"><input id="prizeImageInput" type="file" accept="image/png,image/jpeg,image/webp"><div id="prizeImagePreview" class="prize-image-preview" hidden=""><img id="prizeImagePreviewImg" alt="Selected prize"><div><strong id="prizeImageName">Prize picture</strong><button id="removePrizeImage" type="button">Remove picture</button></div></div></div><p id="prizeImageMessage" class="form-message" role="status"></p></div></form></div>
-          <section id="winnerReveal" class="panel staff-winner" aria-labelledby="selectedPrizeWinnersTitle" hidden=""><h2 id="selectedPrizeWinnersTitle">Winner</h2><div id="selectedPrizeWinners"></div></section>
+          <div class="panel draw-controls selected-prize-panel"><form id="drawForm"><select id="prizeSelect" aria-label="Selected prize" hidden=""><option value="">Select a reward</option></select><div id="selectedPrize" class="selected-prize" aria-live="polite"><img id="selectedPrizeImage" alt="" hidden=""><strong id="selectedPrizeName">Select a prize below</strong><span id="selectedPrizeProgress"></span></div><div class="selected-prize-actions"><button id="selectedPrizeAdd" type="button">+ Add prize</button><button id="selectedPrizeEdit" type="button" disabled="">Edit</button><button id="selectedPrizeDelete" type="button" disabled="">Delete</button><button id="selectedPrizeClear" type="button" hidden>Clear selection</button></div><p id="drawMessage" class="form-message" role="status"></p><button id="clearOldPending" type="button" class="button secondary" hidden>Clear old pending save</button><div hidden><label for="roundInput">Round <span>optional</span></label><input id="roundInput" maxlength="100" placeholder="Round name"><label for="prizeImageInput">Prize picture <span>optional</span></label><div class="prize-image-picker"><input id="prizeImageInput" type="file" accept="image/png,image/jpeg,image/webp"><div id="prizeImagePreview" class="prize-image-preview" hidden=""><img id="prizeImagePreviewImg" alt="Selected prize"><div><strong id="prizeImageName">Prize picture</strong><button id="removePrizeImage" type="button">Remove picture</button></div></div></div><p id="prizeImageMessage" class="form-message" role="status"></p></div></form></div>
         </div>
         <div class="panel draw-action-bar" role="toolbar" aria-label="Prize draw actions"><button id="openProjector" class="button dark" type="button">Open projector</button><button id="spinButton" class="button primary" type="submit" form="drawForm" disabled="">Draw</button><button id="readyNextDraw" class="button secondary" type="button">Next prize</button><button id="refreshDraw" class="button secondary" type="button">Refresh</button></div>
+        <details id="winnerReveal" class="panel staff-winner" open hidden>
+          <summary id="selectedPrizeWinnersTitle">Winner</summary>
+          <div id="selectedPrizeWinners"></div>
+        </details>
+        <details class="panel draw-history projector-audio-controls">
+          <summary>Projector audio</summary>
+          <div class="projector-volume-sliders">
+            <label>Music volume <input id="projectorMusicVolume" type="range" min="0" max="100" value="38"></label>
+            <label>Sound effects volume <input id="projectorEffectsVolume" type="range" min="0" max="100" value="72"></label>
+          </div>
+        </details>
         <section class="panel reward-editor" aria-labelledby="rewardTitle">
           <div class="reward-list-heading"><h2 id="rewardTitle">Rewards</h2><span id="rewardCount"></span></div>
           <div id="rewardPublishedList"></div>

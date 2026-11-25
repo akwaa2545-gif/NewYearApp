@@ -3,14 +3,15 @@
 // The draw service supplies the ID. These settings control only its presentation.
 window.EventDeskDigitDraw = (() => {
   const WIDTH = 7;
+  const ROWS_PER_TURN = 10;
   const config = Object.freeze({
-    rotations: 2,
     firstStopMs: 5000,
-    stopIntervalMs: 400,
-    finalSuspenseMs: 600,
+    firstRotations: 2,
     accelerationMs: 500,
-    decelerationMs: 2200,
-    finalDecelerationMs: 3000
+    firstDecelerationMs: 3000,
+    cruiseRowMs: 80,
+    decelerationMs: 1400,
+    finalDecelerationMs: 1900
   });
 
   function normalize(value) {
@@ -28,6 +29,30 @@ window.EventDeskDigitDraw = (() => {
     return (t - accel / 2) / area;
   }
 
+  function planWheels(id) {
+    let previousStop = 0;
+    return Array.from(id, (digit, index) => {
+      const value = Number(digit);
+      const decelerationMs = index === 0 ? config.firstDecelerationMs
+        : index === WIDTH - 1 ? config.finalDecelerationMs : config.decelerationMs;
+      let duration = config.firstStopMs;
+      let target = ROWS_PER_TURN * config.firstRotations + value;
+      if (index > 0) {
+        // Cruise for at least one turn after the previous lock. Choose the first
+        // matching row that leaves room for a full brake at the same entry speed.
+        const earliestBrake = previousStop + ROWS_PER_TURN * config.cruiseRowMs;
+        const earliestTarget = (earliestBrake + (decelerationMs - config.accelerationMs) / 2)
+          / config.cruiseRowMs;
+        const turns = Math.ceil((earliestTarget - value) / ROWS_PER_TURN);
+        target = turns * ROWS_PER_TURN + value;
+        duration = target * config.cruiseRowMs + (config.accelerationMs + decelerationMs) / 2;
+      }
+      previousStop = duration;
+      return {duration, target, lastTick:0, acceleration:config.accelerationMs / duration,
+        deceleration:decelerationMs / duration};
+    });
+  }
+
   function create(host, options = {}) {
     if (!host) return null;
     const reels = Array.from({length:WIDTH}, (_, index) => {
@@ -39,10 +64,10 @@ window.EventDeskDigitDraw = (() => {
       viewport.setAttribute('aria-hidden', 'true');
       const strip = document.createElement('span');
       strip.className = 'digit-strip';
-      // Leading 9 and trailing 0 keep both neighbours on the strip at its limits.
-      for (let i = -1; i <= (config.rotations + 1) * 10; i++) {
+      // Repeat the edge digits so both sides of a wrap display identical rows.
+      for (let i = -1; i <= ROWS_PER_TURN + 1; i++) {
         const row = document.createElement('span');
-        row.textContent = String((i + 10) % 10);
+        row.textContent = String((i + ROWS_PER_TURN) % ROWS_PER_TURN);
         strip.append(row);
       }
       viewport.append(strip);
@@ -52,7 +77,7 @@ window.EventDeskDigitDraw = (() => {
     host.replaceChildren(...reels.map(reel => reel.cell));
     let frame = null, activeId = null;
     function position(reel, rows) {
-      reel.strip.style.transform = 'translateY(' + (-100 * (rows + 1)) + '%)';
+      reel.strip.style.transform = 'translateY(' + (-100 * (rows % ROWS_PER_TURN + 1)) + '%)';
     }
     function settle(id) {
       if (frame !== null) cancelAnimationFrame(frame);
@@ -90,16 +115,8 @@ window.EventDeskDigitDraw = (() => {
 
       host.classList.add('is-rolling');
       const startedAt = performance.now();
-      const wheels = reels.map((reel, index) => {
-        reel.cell.classList.add('is-active');
-        const final = index === WIDTH - 1;
-        const duration = config.firstStopMs + index * config.stopIntervalMs + (final ? config.finalSuspenseMs : 0);
-        return {
-          duration, target: 10 * config.rotations + Number(id[index]), lastTick: 0,
-          acceleration: config.accelerationMs / duration,
-          deceleration: (final ? config.finalDecelerationMs : config.decelerationMs) / duration
-        };
-      });
+      const wheels = planWheels(id);
+      reels.forEach(reel => reel.cell.classList.add('is-active'));
       let locked = 0;
       function update(now) {
         const elapsed = Math.max(0, now - startedAt);
