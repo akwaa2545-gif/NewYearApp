@@ -43,13 +43,23 @@ class EventPolicyTests(unittest.TestCase):
         self.assertEqual(preflight_mutation(self.envelope('checkin_staff', '/api/rewards/reorder'),
                                            self.config, 'https://eventdesk.example', app.parse_session)[0], 403)
 
-    def test_winner_history_actions_use_draw_permissions(self):
-        for path in ('/api/winners/remove', '/api/winners/history/clear'):
-            for role in ('admin', 'staff', 'lucky_draw_operator'):
-                self.assertIsNone(preflight_mutation(self.envelope(role, path),
+    def test_single_winner_removal_uses_draw_permissions(self):
+        path = '/api/winners/remove'
+        for role in ('admin', 'staff', 'lucky_draw_operator'):
+            self.assertIsNone(preflight_mutation(self.envelope(role, path),
+                                                 self.config, 'https://eventdesk.example', app.parse_session))
+        self.assertEqual(preflight_mutation(self.envelope('checkin_staff', path),
+                                           self.config, 'https://eventdesk.example', app.parse_session)[0], 403)
+
+    def test_bulk_winner_history_removal_requires_admin(self):
+        for path in ('/api/winners/history/clear', '/api/admin/draw-history/remove'):
+            with self.subTest(path=path):
+                self.assertIsNone(preflight_mutation(self.envelope('admin', path),
                                                      self.config, 'https://eventdesk.example', app.parse_session))
-            self.assertEqual(preflight_mutation(self.envelope('checkin_staff', path),
-                                               self.config, 'https://eventdesk.example', app.parse_session)[0], 403)
+                for role in ('staff', 'lucky_draw_operator', 'checkin_staff'):
+                    result = preflight_mutation(self.envelope(role, path),
+                                                self.config, 'https://eventdesk.example', app.parse_session)
+                    self.assertEqual(result, (403, 'Admin access required.'), role)
 
     def test_public_session_and_login_keep_the_original_access_policy(self):
         for path in ('/api/staff-session', '/api/login'):

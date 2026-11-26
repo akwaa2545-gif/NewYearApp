@@ -118,6 +118,75 @@ class EventBackendTests(unittest.TestCase):
             self.assertEqual(tx.db.execute('SELECT COUNT(*) FROM staff_sessions').fetchone()[0], 1)
             self.assertEqual(tx.receipt(value['operation_id'])['response']['body_base64'], first['body_base64'])
 
+    def test_projector_management_uses_authorized_handlers_and_keeps_receipts(self):
+        cookie, csrf = self.staff()
+        headers = [('Cookie', cookie), ('X-CSRF-Token', csrf)]
+        password, salt = secrets.token_urlsafe(24), secrets.token_hex(16)
+        self.engine.config['admin_password'] = {'salt': salt, 'hash': app.password_hash(password, salt)}
+        admin = self.engine.handle(self.command('/api/login', data={'password': password, 'admin_only': True}))
+        self.assertEqual(admin['status'], 200)
+        admin_cookie = next(value.split(';')[0] for name, value in admin['headers'] if name.lower() == 'set-cookie')
+        admin_csrf = json.loads(base64.b64decode(admin['body_base64']))['csrf']
+        admin_headers = [('Cookie', admin_cookie), ('X-CSRF-Token', admin_csrf)]
+        with self.store.transaction() as tx, self.engine._bind(tx):
+            token = tx.db.execute('SELECT qr_token FROM employees').fetchone()[0]
+            self.assertEqual(app.scan_action(token, 'checkin', 'test')[1], 'done')
+            first = app.save_prize({'name': 'Phone', 'quantity': 1}, 'test')['id']
+            second = app.save_prize({'name': 'Watch', 'quantity': 1}, 'test')['id']
+            winner, state = app.draw_configured_prize(first, 'test')
+            self.assertEqual(state, 'drawn')
+            tx.db.execute("UPDATE lucky_draw_presentation SET reveal_at='2099-01-01T00:00:00+00:00'")
+            tx.finish(None, None, {})
+
+        remove = self.command('/api/winners/remove', data={'winner_id': winner['winner_id']},
+                              headers=headers, include_replica=False)
+        history = '/api/winners/history/clear'
+        clear_data = {'expected_count': 1, 'reason': 'Rehearsal', 'confirmation': 'RESET DRAW'}
+        clear = self.command(history, headers=admin_headers, include_replica=False, data=clear_data)
+        for command in (remove, clear):
+            # Rejected commands keep their error receipts. A later deliberate
+            # attempt after the draw ends uses the separate operation below.
+            result = self.engine.handle({**command, 'operation_id': str(uuid.uuid4())})
+            self.assertEqual(result['status'], 400)
+            self.assertIn('A draw is in progress',
+                          json.loads(base64.b64decode(result['body_base64']))['error'])
+        with self.store.transaction() as tx:
+            self.assertEqual(tx.db.execute('SELECT COUNT(*) FROM lucky_draw_winners').fetchone()[0], 1)
+            self.assertEqual(tx.db.execute('SELECT COUNT(*) FROM draw_history_removals').fetchone()[0], 0)
+            tx.db.execute("UPDATE lucky_draw_presentation SET reveal_at='2000-01-01T00:00:00+00:00'")
+            tx.finish(None, None, {})
+
+        reorder = self.command('/api/rewards/reorder',
+            data={'ids': [second, first], 'expected_ids': [first, second]},
+            headers=headers, include_replica=False)
+        self.assertEqual(self.engine.handle(reorder)['status'], 200)
+        self.assertTrue(self.engine.handle(reorder)['receipt_found'])
+        stale = {**reorder, 'operation_id': str(uuid.uuid4())}
+        self.assertEqual(self.engine.handle(stale)['status'], 400)
+
+        self.assertEqual(self.engine.handle(remove)['status'], 200)
+        self.assertTrue(self.engine.handle(remove)['receipt_found'])
+        with self.store.transaction() as tx, self.engine._bind(tx):
+            self.assertEqual(app.get_setting('reward_order', []), [second, first])
+            self.assertEqual(tx.db.execute('SELECT COUNT(*) FROM lucky_draw_winners').fetchone()[0], 0)
+            self.assertEqual(tx.db.execute('SELECT COUNT(*) FROM draw_history_removals').fetchone()[0], 1)
+            self.assertEqual(app.get_stats()['eligible'], 1)
+            self.assertIsNotNone(app.draw_winner('Watch', 'test'))
+            tx.db.execute("UPDATE lucky_draw_presentation SET reveal_at='2000-01-01T00:00:00+00:00'")
+            tx.finish(None, None, {})
+
+        denied = self.engine.handle(self.command(history, headers=headers, include_replica=False, data=clear_data))
+        self.assertEqual(denied['status'], 403)
+        with self.store.transaction() as tx:
+            self.assertEqual(tx.db.execute('SELECT COUNT(*) FROM lucky_draw_winners').fetchone()[0], 1)
+            self.assertEqual(tx.db.execute('SELECT COUNT(*) FROM draw_history_removals').fetchone()[0], 1)
+
+        self.assertEqual(self.engine.handle(clear)['status'], 200)
+        self.assertTrue(self.engine.handle(clear)['receipt_found'])
+        with self.store.transaction() as tx:
+            self.assertEqual(tx.db.execute('SELECT COUNT(*) FROM lucky_draw_winners').fetchone()[0], 0)
+            self.assertEqual(tx.db.execute('SELECT COUNT(*) FROM draw_history_removals').fetchone()[0], 2)
+
     def test_audit_time_and_ip_changes_do_not_repeat_a_committed_checkin(self):
         cookie, csrf = self.staff()
         value = self.command('/api/scan/checkin', data={'code': '0000123'},

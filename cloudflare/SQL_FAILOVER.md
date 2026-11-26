@@ -1,6 +1,6 @@
 # SQL primary storage and SQLite outage recovery
 
-Last updated: 2026-11-18.
+Last updated: 2026-11-26.
 
 This guide describes the implemented hosted storage path. SQL Server is the
 primary database. The original Cloudflare SQLite database remains a best-effort
@@ -44,15 +44,20 @@ listener. C# proxies only the fixed event routes to port 8766.
 The browser uses the existing `/api/*` interface. Internal replication fields
 and SQL connection settings are not returned to the browser.
 
-### Reducing usage while retaining the Pages address
+### Pages entry and direct SQL routes
 
-The Pages address remains the public entry point. Normal check-in and draw
-operations use the private SQL API directly from the outer Worker. The direct
+The [public event address](https://tokinparty27.pages.dev/) forwards to the
+same Worker and SQL data as the [canonical Pages entry](https://eventdesk.pages.dev/).
+See [Cloudflare hosting](README.md#runtime) for origin and sign-in behavior.
+Normal check-in and draw operations use the private SQL API directly from the
+outer Worker. The direct
 routes include sign-in and staff-session creation, logout, lookup, check-in,
-verification, draws and rerolls, projector state, the small supporting GETs,
-employee portraits and prize images. SQL still checks the current account,
+verification, draws and rerolls, projector state, reward reordering, winner
+removal, the admin-only history-clearing endpoint, the small supporting
+GETs, employee portraits and prize images. SQL still checks the current account,
 session and role. Browsers never receive API bearer tokens or SQL credentials.
-Larger administration/import/export routes retain the coordinator path.
+Reward image uploads, reward publishing, and larger administration/import/export
+routes retain the coordinator path.
 
 Healthy core requests do not wait for the Durable Object. A confirmed SQL result
 returns first; optional, request-driven background GETs maintain the saved copy
@@ -140,19 +145,21 @@ failed-backup retries, and queued-check-in recovery remain necessary exceptions;
 there is no independent timer or scheduled backup job. SQL session activity can
 also change a revision, so stopping idle requests avoids those updates too.
 
-Both staff and projector pages stop automatic polling and close their event
-connections when hidden, unfocused, or inactive for two minutes. Key presses,
-barcode input, taps, or returning focus resume updates with one immediate
-refresh. Submitted mutations and their results are not cancelled. Automatic
-projector prize-image refreshes pause as well.
+Staff pages stop automatic polling when hidden, unfocused, or inactive for two
+minutes. Key presses, barcode input, taps, or returning focus resume updates.
+The active staff Draw page checks projector state every 15 seconds and refreshes
+summaries once per minute.
 
-The browser uses polling rather than combining finite SSE reconnections with
-polling. Projector state keeps a short refresh interval during active use;
-home, administration, attendance, draw summaries and eligible-ID lists refresh
-less often. Scan pages have no regular data polling; a known pending queue can
-trigger the optional active-page confirmation described below. User actions still
-refresh their results immediately. Stable prize cards and image elements are
-reused instead of rebuilding the board on every unchanged state response.
+The audience projector polls every 15 seconds while waiting and every three
+seconds while a prize is armed or a draw is in progress. Failed polls back off
+to 30 seconds, then 60 seconds. Hiding the projector pauses polling. Showing it
+again fetches current state immediately. Confirmed selections and draws also
+wake visible projector windows in the same browser. A waiting projector uses
+about 1,920 state requests over eight hours, excluding startup and actions.
+
+Scan pages have no regular data polling. A known pending queue can trigger
+the optional active-page confirmation described below. Stable prize cards and
+image elements are reused on unchanged state responses.
 
 Within each validated backup batch, repeated staff-session updates keep only
 the final state for that session. This avoids writing every intermediate
@@ -161,15 +168,11 @@ deletion remain represented; all original changes and revision continuity are
 validated before writing. Employee, attendance, prize and audit changes retain
 their original revision order.
 
-The projector Draw button uses the same persisted operation-identity helper as
-the main application. Lost replies retain the original UUID and show **Retry
-draw**. Switching prizes cannot replace an unresolved operation. A successful
-state refresh can confirm connectivity, but cannot resolve an uncertain draw;
-that requires the original operation's result or matching server receipt.
-
-An unattended visible projector also pauses after two minutes and keeps its
-last display. It shows **Paused · Tap to reconnect**; interact with it before
-expecting later draw changes to appear.
+Both draw screens can retry an exact saved draw in the original signed-in
+session. A lost reply retains the original UUID until the original operation
+returns a result or matching server receipt. A state refresh cannot confirm
+that outcome. If the session changes and the saved request cannot be matched,
+the pending UUID stays in place and the app blocks a replacement draw.
 
 ## What works when the API is unavailable
 
@@ -418,12 +421,18 @@ there is no global `X-EventDesk-Uncertain: clear` shortcut. It blocks other
 unsafe actions while a mutation is uncertain and permits retrying that action
 with its original UUID.
 
-Before sending a mutation, the browser saves a SHA256 request-identity key, UUID,
-and creation time in `localStorage`. It does not persist raw employee data,
-request bodies, cookies, or CSRF values there. Supported browser storage keeps
-retry identities across reloads. If storage or digest support is unavailable,
-identity tracking is memory-only and does not survive a reload. Staff must
-resolve an unknown outcome before starting a replacement action.
+Before sending a mutation, the browser saves a SHA-256 request-identity key,
+UUID, and creation time in `localStorage`. Pending draws can include the prize
+ID and round name. Pending reorders include the proposed and expected ordered
+prize IDs. These records contain no raw employee data, cookies, or CSRF values.
+Supported browser storage keeps retry identities across reloads. If storage
+or digest support is unavailable, identity tracking is memory-only.
+
+If a reward reorder response is lost, **Retry prize order** resends the same
+order and UUID within the original browser address and signed-in session. A
+successful result or matching `X-EventDesk-Operation-Resolved` receipt resolves
+the attempt. A confirmed rejection can be reviewed against the current prize
+list before a new reorder. An unrelated read cannot confirm the pending write.
 
 ## Configuration and service operations
 
@@ -493,10 +502,19 @@ Migration preserves identities, relationships, and image bytes, verifies table
 counts and hashes, and commits an import receipt. Identity seeds are checked
 with parameterized `IDENT_CURRENT` after `IDENTITY_INSERT`; a broad database
 owner role or `DBCC CHECKIDENT` is not required. Follow the detailed
-[deployment runbook](../DEPLOYMENT.md#sql-primary-cutover-and-recovery) for schema
+[deployment runbook](../DEPLOYMENT.md#migrate-and-cut-over) for schema
 permissions, maintenance, protected packages, and the frozen source export.
 
 ## Verification
+
+The 2026-11-26 projector release was checked at the public event address.
+The live checks verified exact asset bytes, the event title and header, SQL
+sign-in and projector state, and a validation-only reorder retried with the
+same receipt. The reorder check made no prize writes. Local verification passed
+330 JavaScript tests plus three Pages entry tests and 497 Python tests, with
+56 optional Python tests skipped. Targeted receipt tests passed on SQLite and
+isolated SQL Server. Browser rehearsal confirmed a saved reorder can be retried
+after a lost reply and reload without applying the order twice.
 
 The 2026-11-18 release passed these controlled live checks:
 

@@ -27,8 +27,9 @@ GET_PATHS = frozenset('/api/' + name for name in (
 POST_PATHS = frozenset('/api/' + name for name in (
     'staff-session', 'login', 'logout', 'lookup', 'scan/checkin',
     'checkin/wristband-lost', 'scan/verify', 'draw/participants', 'rewards/draft',
-    'rewards/draft/delete', 'rewards/publish', 'draw', 'projector/state',
-    'projector/prize-image', 'winners/reroll', 'wristbands/generate', 'wristbands/action',
+    'rewards/draft/delete', 'rewards/publish', 'rewards/reorder', 'draw', 'projector/state',
+    'projector/prize-image', 'winners/reroll', 'winners/remove', 'winners/history/clear',
+    'wristbands/generate', 'wristbands/action',
     'prizes', 'settings', 'users', 'users/update', 'admin/employees',
     'admin/attendance/remove', 'admin/draw-history/remove', 'import/inspect',
     'import/preview', 'import/commit', 'import',

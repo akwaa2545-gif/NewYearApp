@@ -485,20 +485,124 @@ test('an older saved draw without retry details still matches its original prize
   assert.equal(f.run('state.selectedPrizeId'), 1);
 });
 
-test('an unmatched old save offers an explicit review and clear action', async () => {
+test('an unmatched save remains pending and blocks a replacement draw', async () => {
   const f = fixture([new Error('lost reply')]);
   await assert.rejects(f.run("api('/api/rewards/reorder', {method:'POST',data:{ids:[1,2]}})"));
+  const original = [...f.localStorage.entries];
   f.node('roundInput').value = '';
   await f.run('drawWinner({preventDefault(){}})');
   assert.equal(f.calls.length, 1);
-  assert.equal(f.node('clearOldPending').hidden, false);
-  assert.match(f.node('drawMessage').textContent, /review the winners/i);
-  f.context.window.confirm = () => true;
-  f.run('loadWinnerHistory = async () => {}; loadPrizeList = async () => {}; refreshStats = async () => {}');
-  await f.run('clearOldPendingSave()');
-  assert.equal(f.localStorage.length, 0);
+  assert.match(f.node('drawMessage').textContent, /retry the original action/i);
+  assert.equal(f.context.window.EventDeskStorage.discardPending, undefined);
+  assert.doesNotMatch(fs.readFileSync('static/index.html', 'utf8'), /clearOldPending/);
+  assert.deepEqual([...f.localStorage.entries], original);
+  assert.equal(f.context.window.EventDeskStorage.current().uncertain, true);
+});
+
+test('the staff form retries the exact no-round projector draw after reload', async () => {
+  const first = fixture([new Error('lost reply')]);
+  await assert.rejects(first.run("api('/api/draw', {method:'POST',data:{prize_id:1}})"));
+  const next = fixture([{status:200,payload:{winner:{employee_id:'0000123',winner_id:1}}}], first.localStorage);
+  next.node('roundInput').value = 'Staff round';
+  next.run('refreshStats = async () => {}; loadPrizeList = async () => {}; loadProjectorState = async () => {}; loadWinnerHistory = async () => {}');
+  await next.run('drawWinner({preventDefault(){}})');
+  assert.equal(next.calls.length, 1);
+  assert.equal(next.calls[0].path, '/api/draw');
+  assert.equal(next.calls[0].options.body, first.calls[0].options.body);
+  assert.equal(next.calls[0].options.headers['X-EventDesk-Operation-Id'], first.calls[0].options.headers['X-EventDesk-Operation-Id']);
+});
+
+test('a session change preserves an unmatched draw identity', async () => {
+  const first = fixture([new Error('lost reply')]);
+  first.run("state.csrf = 'original-csrf'");
+  await assert.rejects(first.run("api('/api/draw', {method:'POST',data:{prize_id:1,round_name:''}})"));
+  const original = [...first.localStorage.entries];
+  const next = fixture([], first.localStorage);
+  next.run("state.csrf = 'new-csrf'");
+  next.node('roundInput').value = '';
+  await next.run('drawWinner({preventDefault(){}})');
+  assert.equal(next.calls.length, 0);
+  assert.deepEqual([...next.localStorage.entries], original);
+  assert.equal(next.context.window.EventDeskStorage.current().uncertain, true);
+});
+
+test('an unconfirmed reward retry is retained after a permission error without its receipt', async () => {
+  const f = fixture([new Error('lost reply'), {status:403,payload:{error:'Forbidden'}},
+    {status:200,resolved:true,payload:{ids:[2,1]}}]);
+  const call = "api('/api/rewards/reorder', {method:'POST',data:{ids:[2,1],expected_ids:[1,2]}})";
+  await assert.rejects(f.run(call));
+  await assert.rejects(f.run(call), /Forbidden/);
+  assert.equal(f.context.window.EventDeskStorage.current().uncertain, true);
+  assert.equal(f.localStorage.length, 1);
+  await f.run(call);
+  assert.equal(new Set(f.calls.map(call => call.options.headers['X-EventDesk-Operation-Id'])).size, 1);
   assert.equal(f.context.window.EventDeskStorage.current().uncertain, false);
-  assert.equal(f.node('clearOldPending').hidden, true);
+});
+
+const rewardOrderBody = {ids:[2,1], expected_ids:[1,2]};
+
+function rewardOrderFixture(replies, saved) {
+  const f = fixture(replies, saved);
+  f.node('rewardPublishedList').querySelectorAll = () => [];
+  f.run("state.csrf = 'original-session'; rewardData.prizes.push({id:2,name:'Second'});"
+    + "renderPublishedRewards = () => {}; loadRewards = async () => {}; loadProjectorState = async () => {}; toast = () => {};");
+  return f;
+}
+
+test('Retry prize order survives reload and sends the same body and request ID', async () => {
+  const first = rewardOrderFixture([new Error('reply lost')]);
+  first.run("state.rewardDragId = 2; var dropTarget = {dataset:{prizeId:'1'}, classList:{contains:() => false}};");
+  await first.run('dropReward({target:{closest:() => dropTarget}, preventDefault(){}})');
+  assert.equal(first.node('retryRewardOrder').hidden, false);
+  assert.deepEqual(JSON.parse(first.calls[0].options.body), rewardOrderBody);
+
+  const reopened = rewardOrderFixture([{status:200,resolved:true,payload:{ids:[2,1]}}], first.localStorage);
+  reopened.run('rewardData.prizes = [...rewardData.prizes].reverse()');
+  await reopened.run('refreshRewardOrderRetry()');
+  assert.equal(reopened.node('retryRewardOrder').hidden, false);
+  reopened.context.document.activeElement = reopened.node('retryRewardOrder');
+  reopened.node('rewardTitle').focus = () => { reopened.context.document.activeElement = reopened.node('rewardTitle'); };
+  await Promise.all([reopened.run('retryRewardOrder()'), reopened.run('retryRewardOrder()')]);
+  assert.equal(reopened.calls.length, 1);
+  assert.equal(reopened.calls[0].options.body, first.calls[0].options.body);
+  assert.equal(reopened.calls[0].options.headers['X-EventDesk-Operation-Id'],
+    first.calls[0].options.headers['X-EventDesk-Operation-Id']);
+  assert.equal(reopened.node('retryRewardOrder').hidden, true);
+  assert.equal(reopened.localStorage.length, 0);
+  assert.equal(reopened.node('rewardOrderStatus').textContent, 'Prize order saved.');
+  assert.equal(reopened.context.document.activeElement, reopened.node('rewardTitle'));
+});
+
+test('a lost reorder reply offers retry without waiting for a list refresh', async () => {
+  const f = rewardOrderFixture([new Error('reply lost')]);
+  f.run('var followUpReads = 0; loadRewards = async () => { followUpReads++; }');
+  await f.run(`saveRewardOrder(${JSON.stringify(rewardOrderBody)})`);
+  assert.equal(f.run('followUpReads'), 0);
+  assert.equal(f.node('retryRewardOrder').hidden, false);
+  assert.match(f.node('rewardOrderStatus').textContent, /Cannot connect/i);
+});
+
+test('an unconfirmed response keeps the reorder retry but another session cannot submit it', async () => {
+  const f = rewardOrderFixture([new Error('reply lost'), {status:403,payload:{error:'Forbidden'}}]);
+  await f.run(`saveRewardOrder(${JSON.stringify(rewardOrderBody)})`);
+  await f.run('retryRewardOrder()');
+  assert.equal(f.node('retryRewardOrder').hidden, false);
+  assert.equal(f.calls[0].options.headers['X-EventDesk-Operation-Id'], f.calls[1].options.headers['X-EventDesk-Operation-Id']);
+  f.run("state.csrf = 'different-session'");
+  await f.run('retryRewardOrder()');
+  assert.equal(f.calls.length, 2);
+  assert.equal(f.node('retryRewardOrder').hidden, true);
+  assert.equal(f.localStorage.length, 1);
+});
+
+test('a confirmed reorder rejection lets the operator refresh and try a new order', async () => {
+  const f = rewardOrderFixture([new Error('reply lost'),
+    {status:400,resolved:true,payload:{error:'Reward order changed. Refresh the list and try again.'}}]);
+  await f.run(`saveRewardOrder(${JSON.stringify(rewardOrderBody)})`);
+  await f.run('retryRewardOrder()');
+  assert.equal(f.node('retryRewardOrder').hidden, true);
+  assert.equal(f.localStorage.length, 0);
+  assert.match(f.node('rewardOrderStatus').textContent, /Reward order changed/);
 });
 
 test('draw form retry uses the original ID without a projector write first', async () => {
@@ -513,6 +617,22 @@ test('draw form retry uses the original ID without a projector write first', asy
   assert.equal(f.calls.length, 2);
   assert.equal(f.calls[1].path, '/api/draw');
   assert.equal(f.calls[1].options.headers['X-EventDesk-Operation-Id'], f.calls[0].options.headers['X-EventDesk-Operation-Id']);
+});
+
+test('a lost preparing reply leaves Retry enabled and reuses its operation ID', async () => {
+  const f = fixture([new Error('lost reply'), {status:200,resolved:true,payload:{phase:'preparing'}},
+    {status:200,payload:{winner:{winner_id:1,employee_id:'0000123'}}}]);
+  f.node('roundInput').value = '';
+  f.run('renderProjectorState = () => {}; refreshStats = async () => {}; loadPrizeList = async () => {}; loadProjectorState = async () => {}; loadWinnerHistory = async () => {}');
+  const prepare = "setProjectorPhase('preparing', {prize:'Reward', round_name:''}, false)";
+  await assert.rejects(f.run(prepare));
+  f.run("staffProjectorState = {phase:'preparing'}; updateDrawAvailability()");
+  assert.equal(f.node('spinButton').disabled, false);
+  assert.equal(f.node('spinButton').textContent, 'Retry same draw');
+  await f.run('drawWinner({preventDefault(){}})');
+  assert.deepEqual(f.calls.map(call => call.path), ['/api/projector/state', '/api/projector/state', '/api/draw']);
+  assert.equal(f.calls[1].options.headers['X-EventDesk-Operation-Id'], f.calls[0].options.headers['X-EventDesk-Operation-Id']);
+  assert.equal(f.calls[1].options.body, f.calls[0].options.body);
 });
 
 test('a rejected draw leaves the selected prize on the projector', async () => {

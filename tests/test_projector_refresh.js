@@ -96,6 +96,72 @@ test('the projector finishes seven mechanical reels before showing an announced 
   assert.equal(f.node('projectorWinnerMeta').textContent, winner.department);
 });
 
+test('a late projector poll still animates a newly announced winner for the armed prize', () => {
+  const f = fixture({reducedMotion:false});
+  let callback;
+  f.context.performance = {now:() => 0};
+  f.context.requestAnimationFrame = next => { callback = next; return 1; };
+  f.context.cancelAnimationFrame = () => {};
+  f.render(f.state({sequence:2, phase:'ready_for_next', prize:'Prize one'}));
+  const winner = {employee_id:'2606801', name:'Test guest'};
+  f.render(f.state({sequence:3, phase:'winner_announced', prize:'Prize one',
+    spin_started_at:'2026-11-26T00:00:00Z', winner}));
+  assert.equal(f.node('projectorDrawWinnerName').hidden, true);
+  assert.equal(f.run('projectorDigits.isSpinning()'), true);
+  callback(30000);
+  assert.equal(f.node('projectorDrawWinnerName').textContent, winner.name);
+  assert.equal(f.node('projectorDrawWinnerName').hidden, false);
+});
+
+test('a next prize arriving during late reels waits for the saved winner reveal', () => {
+  const f = fixture({reducedMotion:false});
+  let frame, finishHold;
+  f.context.performance = {now:() => 0};
+  f.context.requestAnimationFrame = callback => { frame = callback; return 1; };
+  f.context.cancelAnimationFrame = () => {};
+  f.context.setTimeout = callback => { finishHold = callback; return 1; };
+  const prizes = [{id:1, name:'Prize one', quantity:1, has_image:false, winners:[]},
+    {id:2, name:'Prize two', quantity:1, has_image:false, winners:[]}];
+  const winner = {employee_id:'2606801', name:'Test guest'};
+  f.render(f.state({sequence:1, phase:'ready_for_next', prize:'Prize one', prizes}));
+  f.render(f.state({sequence:2, phase:'winner_announced', prize:'Prize one', prizes, prize_image_url:null,
+    spin_started_at:'2026-11-26T00:00:00Z', show_employee_id:true, winner}));
+  f.render(f.state({sequence:3, phase:'ready_for_next', prize:'Prize two', prizes, show_employee_id:true}));
+  frame(30000);
+  assert.equal(f.node('projectorDrawWinnerName').hidden, false);
+  assert.equal(f.node('projectorDrawWinnerName').textContent, winner.name);
+  assert.equal(f.run('latestState.prize'), 'Prize one');
+  finishHold();
+  assert.equal(f.run('latestState.prize'), 'Prize two');
+});
+
+test('a reward order change cannot replay the previously saved winner', () => {
+  let celebrations = 0;
+  const f = fixture({reducedMotion:false, audio:{reset() {}, startDraw() {}, celebrate() { celebrations++; }}});
+  f.context.performance = {now:() => 0};
+  f.context.requestAnimationFrame = () => 1;
+  f.context.cancelAnimationFrame = () => {};
+  const winner = {winner_id:4, employee_id:'0000021', name:'Test guest'};
+  const saved = {phase:'winner_announced', prize:'Prize one', spin_started_at:'2026-11-26T00:00:00Z', winner};
+  f.render(f.state({sequence:4, ...saved}));
+  f.render(f.state({sequence:5, ...saved}));
+  assert.equal(f.run('projectorDigits.isSpinning()'), false);
+  assert.equal(f.node('projectorDrawWinnerName').textContent, winner.name);
+  assert.equal(celebrations, 0);
+});
+
+test('hiding the employee ID does not replay the same winner fanfare', () => {
+  let celebrations = 0;
+  const f = fixture({audio:{reset() {}, celebrate() { celebrations++; }}});
+  f.render(f.state({sequence:1, phase:'ready_for_next', prize:'Prize one'}));
+  const saved = {sequence:2, phase:'winner_announced', prize:'Prize one',
+    spin_started_at:'2026-11-26T00:00:00Z', show_employee_id:true};
+  f.render(f.state({...saved, winner:{employee_id:'0000021', name:'Test guest'}}));
+  f.render(f.state({...saved, show_employee_id:false, winner:{name:'Test guest'}}));
+  assert.equal(celebrations, 1);
+  assert.equal(f.node('projectorDrawIdFallback').hidden, true);
+});
+
 test('unchanged projector snapshots do not rebuild cards, even when server time advances', () => {
   const f = fixture();
   f.run('var renderCount = 0; var originalRenderView = renderView; renderView = () => { renderCount++; originalRenderView(); };');
@@ -383,7 +449,7 @@ test('projector draw sends a secure UUID and resolves the confirmed operation', 
   assert.equal(posts.length, 1);
   assert.match(posts[0].options.headers['X-EventDesk-Operation-Id'], /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/);
   assert.equal(posts[0].options.headers['X-CSRF-Token'], 'fixture-csrf');
-  assert.equal(f.entries.size, 0);
+  assert.deepEqual([...f.entries.keys()], ['eventdesk-projector-draw']);
   assert.equal(f.context.window.EventDeskStorage.current().uncertain, false);
 });
 
@@ -397,7 +463,7 @@ test('a lost projector draw reply blocks another prize and retries the same UUID
   assert.equal(posts.length, 2);
   assert.equal(posts[0].options.headers['X-EventDesk-Operation-Id'], posts[1].options.headers['X-EventDesk-Operation-Id']);
   assert.equal(f.context.window.EventDeskStorage.current().uncertain, false);
-  assert.equal(f.entries.size, 0);
+  assert.deepEqual([...f.entries.keys()], ['eventdesk-projector-draw']);
 });
 
 test('a mismatched projector draw receipt remains unresolved and keeps the saved identity', async () => {
@@ -443,7 +509,7 @@ test('a failed display refresh after a confirmed draw cannot make the draw uncer
   await f.run('drawProjectorPrize({id:1})');
   assert.equal(posts.length, 1);
   assert.equal(f.context.window.EventDeskStorage.current().uncertain, false);
-  assert.equal(f.entries.size, 0);
+  assert.deepEqual([...f.entries.keys()], ['eventdesk-projector-draw']);
   assert.match(f.node('projectorMessage').textContent, /saved/i);
 });
 
@@ -500,6 +566,20 @@ test('direct SQL online state enables the projector retry while retaining a sepa
   assert.equal(posts[0].options.headers['X-EventDesk-Operation-Id'], posts[1].options.headers['X-EventDesk-Operation-Id']);
   assert.equal(f.context.window.EventDeskStorage.current().uncertain, false);
   assert.equal(f.context.window.EventDeskStorage.current().queue, 'pending', 'one confirmed draw cannot clear a separate outbox');
+});
+
+test('the projector can retry an exact staff draw with the same prize and session', async () => {
+  const f = fixture();
+  const body = JSON.stringify({prize_id:'1', round_name:'Staff round'});
+  const storage = f.context.window.EventDeskStorage;
+  const id = await storage.prepareOperation(JSON.stringify(['/api/draw', 'POST', body, 'fixture-csrf']));
+  storage.markUncertain(id);
+  const posts = drawReplies(f, [{status:200, resolved:true}]);
+  await f.run('drawProjectorPrize({id:1})');
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].options.body, body);
+  assert.equal(posts[0].options.headers['X-EventDesk-Operation-Id'], id);
+  assert.equal(storage.current().uncertain, false);
 });
 
 test('an invalid success reply and unconfirmed server failure retain the draw UUID', async () => {

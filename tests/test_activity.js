@@ -126,16 +126,15 @@ for (const page of ['app', 'projector']) {
     await f.settle();
     f.calls.length = 0;
     await f.tick(15000);
-    assert.equal(f.calls.filter(path => path === '/api/projector/state').length, 5);
+    assert.equal(f.calls.filter(path => path === '/api/projector/state').length, 1);
     assert.equal(f.sources.length, 0);
   });
 }
 
-test('one active projector stays within 10,100 background requests over eight hours', async () => {
+test('one waiting projector uses 1,920 polls plus its initial request over eight hours', async () => {
   const f = fixture('projector'); await f.settle();
   for (let minute = 0; minute < 480; minute++) { f.document.dispatch('keydown'); await f.tick(60000); }
-  assert.equal(f.calls.filter(path => path === '/api/projector/state').length, 9601);
-  assert.ok(f.calls.length <= 10100);
+  assert.equal(f.calls.filter(path => path === '/api/projector/state').length, 1921);
   assert.equal(f.sources.length, 0);
 });
 
@@ -145,11 +144,11 @@ test('an unattended visible projector picks up staff selections, and catches up 
   f.context.fetch = async () => ({ok:true, status:200, json:async () => ({prize})});
   f.run('render = state => { latestState = state; }');
   f.focus(false);
-  await f.tick(3000);
+  await f.tick(15000);
   assert.equal(f.run('latestState.prize'), 'Tablet');
   await f.tick(120001);
   prize = 'Scooter';
-  await f.tick(3000);
+  await f.tick(15000);
   assert.equal(f.run('latestState.prize'), 'Scooter');
   f.document.hidden = true; f.document.dispatch('visibilitychange');
   prize = 'Watch';
@@ -178,10 +177,89 @@ test('a selection during a poll fetches the latest prize immediately after the o
   assert.equal(f.run('lastRenderedSequence'), 4);
 });
 
-test('main draw polls state once per three seconds and summaries once per minute', async () => {
+test('a confirmed draw wakes the projector and polls every three seconds while the prize is active', async () => {
+  const f = fixture('projector'); await f.settle();
+  let phase = 'ready_for_next', count = 0;
+  f.run('render = state => { latestState = state; }');
+  f.context.fetch = async () => {
+    count++;
+    return {ok:true, json:async () => ({phase, prize:'Watch'})};
+  };
+  f.focus(false);
+  f.window.dispatch('storage', {key:'eventdesk-projector-selection', newValue:'2'}); await f.settle();
+  assert.equal(count, 1);
+  await f.tick(2999);
+  assert.equal(count, 1);
+  await f.tick(1);
+  assert.equal(count, 2);
+  phase = 'spinning';
+  f.window.dispatch('storage', {key:'eventdesk-projector-draw', newValue:'3:2026-11-26T00:00:00Z'});
+  await f.settle();
+  assert.equal(count, 3, 'the confirmed draw bypasses the next scheduled poll');
+  phase = 'winner_announced';
+  await f.tick(3000);
+  assert.equal(count, 4);
+  await f.tick(14999);
+  assert.equal(count, 4);
+  await f.tick(1);
+  assert.equal(count, 5);
+});
+
+test('failed projector polls back off to thirty then sixty seconds and recover normal cadence', async () => {
+  const f = fixture('projector'); await f.settle();
+  let fails = true, count = 0;
+  f.context.fetch = async () => {
+    count++;
+    return {ok:!fails, status:fails ? 503 : 200, json:async () => ({phase:'waiting'})};
+  };
+  f.window.dispatch('online'); await f.settle();
+  assert.equal(count, 1);
+  await f.tick(29999); assert.equal(count, 1);
+  await f.tick(1); assert.equal(count, 2);
+  await f.tick(59999); assert.equal(count, 2);
+  await f.tick(1); assert.equal(count, 3);
+  fails = false;
+  await f.tick(60000); assert.equal(count, 4);
+  await f.tick(14999); assert.equal(count, 4);
+  await f.tick(1); assert.equal(count, 5);
+});
+
+test('hiding and showing during a slow poll queues one refresh without overlapping requests', async () => {
+  const f = fixture('projector'); await f.settle();
+  const pending = [];
+  f.context.fetch = () => new Promise(resolve => pending.push(resolve));
+  f.window.dispatch('online');
+  assert.equal(pending.length, 1);
+  f.document.hidden = true; f.document.dispatch('visibilitychange');
+  await f.tick(30000);
+  f.document.hidden = false; f.document.dispatch('visibilitychange');
+  f.window.dispatch('pageshow');
+  assert.equal(pending.length, 1);
+  pending.shift()({ok:true, json:async () => ({phase:'waiting'})}); await f.settle();
+  assert.equal(pending.length, 1);
+  pending.shift()({ok:true, json:async () => ({phase:'waiting'})}); await f.settle();
+  assert.equal(pending.length, 0);
+});
+
+test('a draw confirmation waits for an in-flight state read before requesting the saved draw', async () => {
+  const f = fixture('projector'); await f.settle();
+  const pending = [];
+  f.context.fetch = () => new Promise(resolve => pending.push(resolve));
+  const poll = f.run('refreshProjectorState()');
+  const afterDraw = f.run('loadState({fresh:true})');
+  assert.equal(pending.length, 1);
+  pending.shift()({ok:true, json:async () => ({phase:'ready_for_next'})});
+  await poll; await f.settle();
+  assert.equal(pending.length, 1);
+  pending.shift()({ok:true, json:async () => ({phase:'spinning'})});
+  assert.equal((await afterDraw).phase, 'spinning');
+  assert.equal(pending.length, 0);
+});
+
+test('main draw polls state once per fifteen seconds and summaries once per minute', async () => {
   const f = fixture('app'); await f.settle();
   await f.tick(60000);
-  assert.equal(f.calls.filter(path => path === '/api/projector/state').length, 20);
+  assert.equal(f.calls.filter(path => path === '/api/projector/state').length, 4);
   assert.equal(f.calls.filter(path => path === '/stats').length, 1);
   assert.equal(f.calls.filter(path => path === '/history').length, 1);
   assert.equal(f.sources.length, 0);
@@ -209,7 +287,7 @@ test('a projector draw already submitted finishes and retains its result while p
   f.context.fetch = path => path === '/api/draw' ? new Promise(resolve => { finishDraw = resolve; }) : originalFetch(path);
   f.context.window.EventDeskStorage = {prepareOperation:async () => '11111111-1111-4111-8111-111111111111',
     current:() => ({uncertain:false, offline:false}), beginRequest:() => 1, markUncertain() {},
-    completeOperation:async () => true, update() {}};
+    operationUncertain:() => false, completeOperation:async () => true, update() {}, notifyProjectorDraw() {}};
   f.run('renderView = () => {};');
   const draw = f.run("drawProjectorPrize({id:'reward'})");
   await f.settle();

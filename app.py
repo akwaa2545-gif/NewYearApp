@@ -1053,7 +1053,7 @@ def remove_draw_history(payload, actor):
         db.execute('BEGIN IMMEDIATE')
         try:
             presentation = db.execute('SELECT * FROM lucky_draw_presentation WHERE singleton=1').fetchone()
-            if presentation and presentation['phase'] in ('preparing', 'spinning', 'winner_selected'):
+            if effective_projector_phase(presentation) in ('preparing', 'spinning', 'winner_selected'):
                 raise ValueError('A draw is in progress. Wait until it finishes.')
             winners = [dict(row) for row in db.execute('SELECT * FROM lucky_draw_winners ORDER BY id')]
             if len(winners) != expected:
@@ -1090,7 +1090,7 @@ def remove_draw_winner(payload, actor):
         db.execute('BEGIN IMMEDIATE')
         try:
             presentation = db.execute('SELECT * FROM lucky_draw_presentation WHERE singleton=1').fetchone()
-            if presentation and presentation['phase'] in ('preparing', 'spinning', 'winner_selected'):
+            if effective_projector_phase(presentation) in ('preparing', 'spinning', 'winner_selected'):
                 raise ValueError('A draw is in progress. Wait until it finishes.')
             row = db.execute('SELECT * FROM lucky_draw_winners WHERE id=?', (winner_id,)).fetchone()
             if not row:
@@ -1169,6 +1169,24 @@ def set_projector_state(db, phase, actor, winner=None, prize=None, round_name=No
                 stamp, actor_name(actor)))
 
 
+def effective_projector_phase(presentation):
+    if presentation is None:
+        return 'waiting'
+    phase = presentation['phase']
+    reveal_at = presentation['reveal_at']
+    if phase != 'spinning' or not reveal_at:
+        return phase
+    try:
+        remaining = (datetime.fromisoformat(reveal_at) - datetime.now(timezone.utc)).total_seconds()
+    except (TypeError, ValueError):
+        return phase
+    if remaining <= 0:
+        return 'winner_announced'
+    if remaining <= .8:
+        return 'winner_selected'
+    return phase
+
+
 def get_projector_state(db=None):
     if db is None:
         with db_connection() as connection:
@@ -1177,16 +1195,7 @@ def get_projector_state(db=None):
     if not row:
         return {'sequence': 0, 'phase': 'waiting'}
     result = dict(row)
-    phase = result['phase']
-    if phase == 'spinning' and result.get('reveal_at'):
-        try:
-            remaining = (datetime.fromisoformat(result['reveal_at']) - datetime.now(timezone.utc)).total_seconds()
-            if remaining <= 0:
-                phase = 'winner_announced'
-            elif remaining <= .8:
-                phase = 'winner_selected'
-        except (TypeError, ValueError):
-            pass
+    phase = effective_projector_phase(result)
     selected_winner = None
     if result.get('winner_json'):
         try:
@@ -3663,10 +3672,6 @@ class PartyHandler(BaseHTTPRequestHandler):
                 user = self.authorize(modify=True, roles=('lucky_draw_operator',))
                 if not user: return
                 return self.respond(remove_draw_winner(self.read_json(), user))
-            if path == '/api/winners/history/clear':
-                user = self.authorize(modify=True, roles=('lucky_draw_operator',))
-                if not user: return
-                return self.respond(remove_draw_history(self.read_json(), user))
             if path == '/api/wristbands/generate':
                 user = self.authorize(admin=True, modify=True)
                 if not user: return
@@ -3701,7 +3706,7 @@ class PartyHandler(BaseHTTPRequestHandler):
                 user = self.authorize(admin=True, modify=True)
                 if not user: return
                 return self.respond(remove_attendance(self.read_json(), user))
-            if path == '/api/admin/draw-history/remove':
+            if path in ('/api/admin/draw-history/remove', '/api/winners/history/clear'):
                 user = self.authorize(admin=True, modify=True)
                 if not user: return
                 return self.respond(remove_draw_history(self.read_json(), user))

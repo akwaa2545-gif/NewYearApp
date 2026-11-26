@@ -203,6 +203,33 @@ input,select,textarea{width:100%;border:1px solid #d8dee9;border-radius:0;backgr
 .admin-form label[hidden]{display:none}
 .brand-company{display:inline-flex;align-items:center;gap:12px;letter-spacing:normal}.brand-company img{display:block;width:130px;height:auto}.brand-company .brand-product{padding-left:12px;border-left:1px solid #d0d2d4;color:#50545b;font-size:15px;font-weight:750;letter-spacing:-.02em}.brand-light.brand-company{align-self:flex-start;background:#fff;padding:12px 16px;border-radius:0}.login-copy{background:radial-gradient(circle at 85% 20%,rgba(229,110,66,.22),transparent 30%),linear-gradient(145deg,#252932,#41434a)}.login-copy .kicker{color:#ffb396}.login-steps b{color:#ff9b70}.login-mark{background:#e8663b;box-shadow:0 10px 24px rgba(183,72,37,.22)}.button.primary{background:#c9522c;box-shadow:0 8px 18px rgba(169,66,34,.18)}.button.primary:hover{background:#ab3e1f}.app-header{border-bottom:2px solid #ed7952}.task-card.verify{--accent:#b8492a;--tint:#fff0e8}.task-card.admin{--accent:#735a50;--tint:#f6eeea}.admin-action summary{color:#a94427}
 @media(max-width:640px){.brand-company img{width:100px}.brand-company .brand-product{font-size:13px}.mobile-brand.brand-company{display:inline-flex}.login-mark{display:none}.mobile-brand.brand-company{margin-bottom:28px}.app-header .brand-company{gap:8px}.app-header .brand-company .brand-product{padding-left:8px}}
+.app-header {
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: 12px;
+  height: auto;
+  min-height: 72px;
+}
+.app-header .brand-company {
+  justify-self: start;
+  min-width: 0;
+  max-width: 100%;
+  text-align: left;
+}
+.app-header .brand-company img { flex: none; }
+.app-header .brand-product {
+  min-width: 0;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 640px) {
+  .app-header { min-height: 62px; column-gap: 8px; }
+  .app-header .brand-company img { width: clamp(64px, 24vw, 100px); }
+}
+@media (max-width: 420px) {
+  .app-header { display: flex; flex-wrap: wrap; padding-bottom: 6px; }
+  .app-header .brand-company { flex: 1 1 184px; }
+  .app-header .header-actions { margin-left: auto; }
+}
 :root{--ink:#2c3036;--muted:#686e75;--line:#e5e5e3;--canvas:#f7f7f6;--navy:#383b40;--blue:#b64829;--blue-soft:#fff1eb;--shadow:0 18px 55px rgba(35,35,35,.08)}
 .icon-button{width:auto;min-width:66px;padding:0 10px;font-size:12px}.password-field button{color:#a54125}input:focus,select:focus,textarea:focus{border-color:#d77555;box-shadow:0 0 0 4px rgba(203,91,51,.13)}
 @media(max-width:640px){#view-home{padding-top:25px}.home-hero{gap:16px;margin-bottom:20px}.home-hero h1{font-size:32px}.home-hero>div>p:last-child{margin-top:8px;font-size:14px}.event-summary{min-width:0;padding:12px 16px;border-radius:0}.event-summary strong{font-size:25px}.event-summary small{display:none}.task-grid{gap:10px}.task-card{min-height:0;display:grid;grid-template-columns:48px 1fr;column-gap:14px;align-items:center;padding:15px;border-radius:0}.task-card:after,.task-number{display:none}.task-icon{grid-row:1 / span 3;width:48px;height:48px;margin:0;border-radius:0;font-size:23px}.task-card strong{font-size:19px}.task-card small{margin-top:3px;font-size:12px;line-height:1.35}.task-link{margin-top:7px;font-size:12px}.status-strip{margin-top:14px}}

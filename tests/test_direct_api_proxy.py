@@ -15,9 +15,14 @@ from test_cloudflare_worker import Headers, Reader, import_worker, request
 from cloudflare.event_primary import PrimaryProtocolError, PrimaryUnavailable
 from cloudflare.direct_api import (DirectAPIProxy, eligible_operation,
     sign_fallback_stamp, apply_fallback_stamp, FALLBACK_STAMP, FALLBACK_PROOF)
+from photo_api.event_protocol import parse_command
 
 
 SECRET = '01' * 32
+PROJECTOR_MANAGEMENT_POSTS = (
+    '/api/rewards/reorder', '/api/winners/remove', '/api/winners/history/clear',
+)
+BULK_HISTORY_PATH = '/api/winners/history/clear'
 
 
 def envelope(path='/api/scan/checkin', method='POST'):
@@ -145,6 +150,15 @@ class DirectTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('X-EventDesk-Operation-Resolved', dict(result.headers))
         self.fallback.assert_not_awaited()
 
+    async def test_projector_management_never_writes_to_the_backup_during_sql_outage(self):
+        self.transport.side_effect = PrimaryUnavailable('SQL is unavailable')
+        for path in PROJECTOR_MANAGEMENT_POSTS:
+            with self.subTest(path=path):
+                response = await self.call(envelope(path))
+                self.assertEqual(response.status, 503)
+                self.assertNotIn('X-EventDesk-Operation-Resolved', dict(response.headers))
+        self.fallback.assert_not_awaited()
+
     async def test_read_and_session_outage_can_use_existing_fallback(self):
         self.transport.side_effect = PrimaryUnavailable('unavailable')
         for path, method in (('/api/me', 'GET'), ('/api/lookup', 'POST'), ('/api/staff-session', 'POST')):
@@ -247,8 +261,13 @@ class WorkerDirectTests(unittest.IsolatedAsyncioTestCase):
         if tasks:
             await asyncio.gather(*tasks)
 
-    def incoming(self, path='/api/scan/checkin', *, method='POST', data=b'{"code":"0000123"}', **extra):
-        headers = {'Cookie': 'party_session=' + self.cookie, 'X-CSRF-Token': self.csrf,
+    def incoming(self, path='/api/scan/checkin', *, method='POST', data=b'{"code":"0000123"}',
+                 role='staff', **extra):
+        cookie, csrf = self.cookie, self.csrf
+        if role != 'staff':
+            cookie, claims = self.module.app.sign_session(role, self.config)
+            csrf = claims['csrf']
+        headers = {'Cookie': 'party_session=' + cookie, 'X-CSRF-Token': csrf,
             'Origin': 'https://eventdesk.example', 'Content-Type': 'application/json',
             'X-EventDesk-Operation-Id': str(uuid.uuid4()), **extra}
         return request(path, headers, method=method,
@@ -263,6 +282,42 @@ class WorkerDirectTests(unittest.IsolatedAsyncioTestCase):
         self.backend.fetch.assert_not_awaited()
         self.assertEqual(len(self.tasks), 1)
         await self.drain()
+        self.backend.fetch.assert_not_awaited()
+
+    async def test_projector_management_survives_quota_and_contract_validation(self):
+        def private_api(_kind, value):
+            parse_command(value)
+            return reply(value)
+
+        self.worker.env.EVENT_COORDINATOR_DISABLED = '1'
+        self.worker._direct_transport.side_effect = private_api
+        for path in PROJECTOR_MANAGEMENT_POSTS:
+            with self.subTest(path=path):
+                role = 'admin' if path == BULK_HISTORY_PATH else 'staff'
+                result = await self.worker.fetch(self.incoming(path, data=b'{}', role=role))
+                self.assertEqual(result.status, 200)
+                self.assertEqual(result.headers.get('X-EventDesk-Storage'), 'sql')
+        self.assertEqual(self.worker._direct_transport.await_count, len(PROJECTOR_MANAGEMENT_POSTS))
+        await self.drain()
+        self.backend.fetch.assert_not_awaited()
+
+    async def test_projector_management_checks_roles_and_csrf_before_sql(self):
+        for path in PROJECTOR_MANAGEMENT_POSTS:
+            with self.subTest(path=path):
+                incoming = self.incoming(path, role='checkin_staff')
+                self.assertEqual((await self.worker.fetch(incoming)).status, 403)
+                role = 'admin' if path == BULK_HISTORY_PATH else 'staff'
+                self.assertEqual((await self.worker.fetch(
+                    self.incoming(path, role=role, **{'X-CSRF-Token': 'wrong'}))).status, 403)
+        self.worker._direct_transport.assert_not_awaited()
+        self.backend.fetch.assert_not_awaited()
+
+    async def test_bulk_history_rejects_staff_before_sql_even_with_backup_disabled(self):
+        self.worker.env.EVENT_COORDINATOR_DISABLED = '1'
+        for role in ('staff', 'lucky_draw_operator'):
+            incoming = self.incoming(BULK_HISTORY_PATH, role=role)
+            self.assertEqual((await self.worker.fetch(incoming)).status, 403)
+        self.worker._direct_transport.assert_not_awaited()
         self.backend.fetch.assert_not_awaited()
 
     async def test_exact_optional_backup_confirmation_is_never_required_by_core_work(self):
@@ -301,10 +356,15 @@ class WorkerDirectTests(unittest.IsolatedAsyncioTestCase):
         self.worker._direct_transport.assert_not_awaited()
 
     async def test_body_limit_and_uuid_missing_fail_before_sql(self):
-        self.assertEqual((await self.worker.fetch(self.incoming(data=b'x' * (16384 + 1)))).status, 413)
-        incoming = self.incoming(**{'X-EventDesk-Operation-Id': ''})
-        self.assertEqual((await self.worker.fetch(incoming)).status, 400)
+        for path in ('/api/scan/checkin', *PROJECTOR_MANAGEMENT_POSTS):
+            with self.subTest(path=path):
+                role = 'admin' if path == BULK_HISTORY_PATH else 'staff'
+                incoming = self.incoming(path, data=b'x' * (16384 + 1), role=role)
+                self.assertEqual((await self.worker.fetch(incoming)).status, 413)
+                missing_id = self.incoming(path, role=role, **{'X-EventDesk-Operation-Id': ''})
+                self.assertEqual((await self.worker.fetch(missing_id)).status, 400)
         self.worker._direct_transport.assert_not_awaited()
+        self.backend.fetch.assert_not_awaited()
 
     async def test_fallback_reconstructs_consumed_bytes_and_server_signed_time(self):
         self.worker._direct_transport.side_effect = PrimaryUnavailable('down')
@@ -342,6 +402,18 @@ class WorkerDirectTests(unittest.IsolatedAsyncioTestCase):
             result = await self.worker.fetch(self.incoming('/api/draw'))
             self.assertEqual(result.status, 503)
             delattr(self.worker.env, field)
+        self.worker._direct_transport.assert_not_awaited()
+
+    async def test_projector_management_direct_optout_forwards_original_request(self):
+        self.worker.env.EVENT_DIRECT_API = '0'
+        self.backend.fetch.side_effect = None
+        self.backend.fetch.return_value = SimpleNamespace(status=200, headers=Headers())
+        for path in PROJECTOR_MANAGEMENT_POSTS:
+            with self.subTest(path=path):
+                role = 'admin' if path == BULK_HISTORY_PATH else 'staff'
+                incoming = self.incoming(path, role=role)
+                self.assertEqual((await self.worker.fetch(incoming)).status, 200)
+                self.backend.fetch.assert_awaited_with(incoming)
         self.worker._direct_transport.assert_not_awaited()
 
     async def test_forged_private_proof_is_not_forwarded_on_normal_coordinator_path(self):

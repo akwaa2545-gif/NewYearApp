@@ -5,6 +5,7 @@ if (new URLSearchParams(location.search).get('visual') === 'childhood') document
 let openingWelcome = new URLSearchParams(location.search).get('intro') === '1';
 const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
 let digitSequence = -1, localDrawWinner = null, initialSequence = null;
+let lastRevealedDraw = null;
 let soundStatus = 'blocked';
 const projectorAudio = window.EventDeskProjectorAudio?.create(status => {
   soundStatus = status;
@@ -15,7 +16,7 @@ const projectorAudio = window.EventDeskProjectorAudio?.create(status => {
 let boardPrizes = [], boardPage = 0, boardWinnerIndex = 0, boardSelected = '';
 let posterIntroPlayed = false;
 let refreshInFlight = false, lastRenderedSequence = -1, lastRenderedPhase = -1;
-let queuedSelectionSequence = -1;
+let queuedSelectionSequence = -1, queuedStateRefresh = false;
 let requestedPrize = null, displayedPrize = null, prizeAnimation = null;
 let deferredProjectorState = null, pendingReelState = null;
 const WINNER_HOLD_MS = 5000;
@@ -24,6 +25,7 @@ let boardSignature = '', boardCards = [], lastRenderedSignature = '';
 let projectorCsrf = '', projectorDrawing = false, currentPhase = 'waiting', pendingPrize = null;
 let currentView = 'overview', latestState = null, selectedPrizeId = null, localPrizePreviewId = null;
 let projectorActivity = null, projectorReady = false, statePollTimer = null;
+let statePollingEnabled = false, statePollFailures = 0, stateRead = null;
 const projectorDigits = window.EventDeskDigitDraw?.create(byId('projectorDigits'),
   {reducedMotion:reducedMotion.matches, onTick:projectorAudio?.reelTick});
 const projectorWinnerDigits = window.EventDeskDigitDraw?.create(byId('projectorWinnerId'), {reducedMotion:true});
@@ -31,24 +33,45 @@ const projectorWinnerDigits = window.EventDeskDigitDraw?.create(byId('projectorW
 function projectorBackgroundAllowed() { return projectorReady && projectorActivity?.isActive() === true; }
 
 // The audience display can be visible on another monitor while staff use the draw window.
-function projectorStatePollingAllowed() { return projectorReady && statePollTimer !== null && !document.hidden; }
+function projectorStatePollingAllowed() { return projectorReady && statePollingEnabled && !document.hidden; }
 
 function pauseProjectorBackground() {
-  clearInterval(statePollTimer); statePollTimer = null;
+  statePollingEnabled = false;
+  clearTimeout(statePollTimer); statePollTimer = null;
+  queuedSelectionSequence = -1;
+  queuedStateRefresh = false;
   if (projectorReady) setConnection('offline', 'Paused');
+}
+
+function projectorPollDelay(state) {
+  if (statePollFailures) return statePollFailures === 1 ? 30000 : 60000;
+  const phase = state?.phase;
+  const active = ['preparing','spinning','winner_selected'].includes(phase)
+    || (phase === 'ready_for_next' && state.prize)
+    || projectorDigits?.isSpinning() || winnerHoldTimer !== null;
+  return active ? 3000 : 15000;
 }
 
 async function refreshProjectorState() {
   if (!projectorStatePollingAllowed() || refreshInFlight) return;
+  clearTimeout(statePollTimer); statePollTimer = null;
   if (projectorBackgroundAllowed()) void window.EventDeskStorage?.confirmBackup?.(true);
+  let state;
   refreshInFlight = true;
-  try { await loadState(); }
-  catch (_) { if (projectorStatePollingAllowed()) setConnection('offline', 'Reconnecting'); }
+  try { state = await loadState(); statePollFailures = 0; }
+  catch (_) {
+    statePollFailures = Math.min(statePollFailures + 1, 2);
+    if (projectorStatePollingAllowed()) setConnection('offline', 'Reconnecting');
+  }
   finally {
     refreshInFlight = false;
-    const needsRefresh = queuedSelectionSequence > lastRenderedSequence;
+    const needsRefresh = queuedStateRefresh || queuedSelectionSequence > lastRenderedSequence;
     queuedSelectionSequence = -1;
-    if (needsRefresh) void refreshProjectorState();
+    queuedStateRefresh = false;
+    if (projectorStatePollingAllowed()) {
+      if (needsRefresh) void refreshProjectorState();
+      else statePollTimer = setTimeout(refreshProjectorState, projectorPollDelay(state));
+    }
   }
 }
 
@@ -56,17 +79,24 @@ function startProjectorBackground() {
   if (projectorActivity || !window.EventDeskActivity) return;
   projectorActivity = window.EventDeskActivity.create();
   window.addEventListener('storage', event => {
-    if (event.key !== 'eventdesk-projector-selection' || !projectorStatePollingAllowed()) return;
+    if (!event.newValue || !projectorStatePollingAllowed()) return;
+    if (event.key === 'eventdesk-projector-draw') {
+      if (refreshInFlight) queuedStateRefresh = true;
+      else void refreshProjectorState();
+      return;
+    }
+    if (event.key !== 'eventdesk-projector-selection') return;
     const sequence = Number(event.newValue);
-    if (!event.newValue || !Number.isSafeInteger(sequence) || sequence <= lastRenderedSequence) return;
+    if (!Number.isSafeInteger(sequence) || sequence <= lastRenderedSequence) return;
     if (refreshInFlight) queuedSelectionSequence = Math.max(queuedSelectionSequence, sequence);
     else void refreshProjectorState();
   });
   const syncVisibility = () => {
     if (document.hidden) return pauseProjectorBackground();
-    if (statePollTimer !== null) return;
-    statePollTimer = setInterval(refreshProjectorState, 3000);
-    refreshProjectorState();
+    if (statePollingEnabled) return;
+    statePollingEnabled = true;
+    if (refreshInFlight) queuedStateRefresh = true;
+    else void refreshProjectorState();
   };
   document.addEventListener('visibilitychange', syncVisibility);
   window.addEventListener('pagehide', pauseProjectorBackground);
@@ -181,15 +211,24 @@ function startDigitDraw(state) {
     projectorAudio?.finishDraw();
     if (latestState?.sequence === state.sequence) {
       const next = deferredProjectorState;
-      if (next) {
+      if (latestState.phase === 'winner_announced') {
+        if (next?.show_employee_id === false && latestState.show_employee_id !== false) {
+          render({...latestState, show_employee_id:false});
+        } else renderView();
+      } else if (next) {
         const winner = latestState.winner || winnerFromNextSnapshot(latestState, id, next);
         if (winner) render({...latestState, phase:'winner_announced', winner,
           show_employee_id:latestState.show_employee_id !== false && next.show_employee_id !== false});
-      } else if (latestState.phase === 'winner_announced') renderView();
+      }
     }
     applyDeferredProjectorState();
   });
 }
+function winnerIdentity(state) {
+  if (state.spin_started_at) return JSON.stringify([state.spin_started_at, state.prize, state.round_name]);
+  return state.winner.winner_id == null ? String(state.sequence) : 'winner:' + state.winner.winner_id;
+}
+
 function showWinner(state) {
   const winner = state.winner; if (!winner) return;
   if (state.show_employee_id !== false && digitSequence === state.sequence && projectorDigits?.isSpinning()) return;
@@ -207,8 +246,9 @@ function showWinner(state) {
   byId('drawStage').classList.add('is-revealed');
   text('winnerRound', winner.round_name || state.round_name || '');
   byId('winnerStage').hidden = true; byId('drawStage').hidden = false;
-  if (byId('winnerStage').dataset.sequence !== String(state.sequence)) {
-    byId('winnerStage').dataset.sequence = String(state.sequence);
+  const draw = winnerIdentity(state);
+  if (lastRevealedDraw !== draw) {
+    lastRevealedDraw = draw;
     createConfetti();
     // Opening a saved result should not replay its fanfare.
     if (digitSequence === state.sequence || Number(state.sequence) !== initialSequence) projectorAudio?.celebrate();
@@ -558,6 +598,14 @@ function renderView() {
     pendingReelState = null;
     if (displayState.phase === 'winner_announced' && displayState.winner) {
       if (pending?.sequence === displayState.sequence && pending.prize === selected.name) showDraw(pending);
+      else if (displayState.spin_started_at && Number(displayState.sequence) !== initialSequence
+          && digitSequence !== displayState.sequence && !reducedMotion.matches
+          && winnerIdentity(displayState) !== lastRevealedDraw
+          && displayState.show_employee_id !== false
+          && window.EventDeskDigitDraw?.normalize(displayState.winner.employee_id)) {
+        // A projector that was polling slowly can receive the confirmed result first.
+        showDraw({...displayState, phase:'winner_selected'});
+      }
       showWinner(displayState);
     } else showDraw(displayState);
   }
@@ -581,11 +629,14 @@ async function requestProjectorDraw(prize) {
   const storage = window.EventDeskStorage;
   if (!storage?.prepareOperation) throw new Error('Refresh this page before drawing.');
   if (storage.current().offline) throw new Error('Draws are unavailable offline.');
-  const body = JSON.stringify({prize_id:prize.id});
+  const retryOnly = Boolean(pendingPrize) || storage.current().uncertain;
+  const data = retryOnly ? await storage.findPendingDraw([prize.id], undefined, projectorCsrf) : {prize_id:prize.id};
+  if (!data) throw new Error('Last save is not confirmed. Retry the original action in the same signed-in session.');
+  const body = JSON.stringify(data);
   const key = JSON.stringify(['/api/draw', 'POST', body, projectorCsrf]);
   if (pendingPrize && pendingPrize.key !== key) throw new Error('Retry the same prize before drawing another.');
-  const operationId = await storage.prepareOperation(key), observation = storage.beginRequest();
-  const wasUncertain = storage.current().uncertain;
+  const operationId = await storage.prepareOperation(key, {retryOnly}), observation = storage.beginRequest();
+  const wasUncertain = storage.operationUncertain?.(operationId) ?? storage.current().uncertain;
   pendingPrize = {id:prize.id, key};
   const uncertain = () => storage.markUncertain(operationId, observation);
   let response, result;
@@ -617,10 +668,11 @@ async function drawProjectorPrize(prize) {
   projectorDrawing = true; renderView(); text('projectorMessage', 'Starting draw…');
   try {
     const result = await requestProjectorDraw(prize);
+    window.EventDeskStorage.notifyProjectorDraw?.(result.winner);
     localDrawWinner = {prizeId:prize.id, employeeId:result.winner.employee_id,
       sequence:Number(latestState?.sequence ?? -1) + 1};
     text('projectorMessage', 'Draw started');
-    try { await loadState(); } catch (_) { text('projectorMessage', 'Draw saved. Reconnecting.'); }
+    try { await loadState({fresh:true}); } catch (_) { text('projectorMessage', 'Draw saved. Reconnecting.'); }
   } catch (error) { text('projectorMessage', error.message || 'Connection lost. Check the result first.'); }
   finally { projectorDrawing = false; renderView(); }
 }
@@ -654,7 +706,16 @@ function render(state) {
   boardSelected = state.prize || '';
   latestState = state; renderView();
 }
-async function loadState() {
+function loadState({fresh = false} = {}) {
+  if (stateRead) {
+    if (fresh) return stateRead.catch(() => {}).then(() => loadState());
+    return stateRead;
+  }
+  stateRead = fetchProjectorState().finally(() => { stateRead = null; });
+  return stateRead;
+}
+
+async function fetchProjectorState() {
   const observation = window.EventDeskStorage?.beginRequest();
   const response = await fetch('/api/projector/state', {credentials: 'same-origin'});
   if (response.status === 401 || response.status === 403) throw Object.assign(new Error('access'), {status: response.status});

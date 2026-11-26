@@ -37,7 +37,7 @@
         }
         if (identities.get(key)?.id !== entry.id) {
           // A newer command in another tab must not replace a local retry identity.
-          const restored = {id:entry.id, created:entry.created, saved:true, draw:entry.draw};
+          const restored = {id:entry.id, created:entry.created, saved:true, draw:entry.draw, reorder:entry.reorder};
           if (!identities.has(key)) {
             identities.set(key, restored);
             observedIdentities.delete(entry.id);
@@ -50,12 +50,22 @@
     }
   }
 
-  async function prepareOperation(requestKey, {allowWhileUncertain = false} = {}) {
-    let key = requestKey;
-    if (global.crypto?.subtle && global.TextEncoder) {
-      const digest = await global.crypto.subtle.digest('SHA-256', new global.TextEncoder().encode(requestKey));
-      key = prefix + Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, '0')).join('');
-    } else persistent = false;
+  async function identityKey(requestKey) {
+    if (!global.crypto?.subtle || !global.TextEncoder) return requestKey;
+    const digest = await global.crypto.subtle.digest('SHA-256', new global.TextEncoder().encode(requestKey));
+    return prefix + Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, '0')).join('');
+  }
+
+  function validRewardOrder(data) {
+    const validIds = ids => Array.isArray(ids) && ids.length > 0
+      && ids.every(id => Number.isSafeInteger(id) && id > 0);
+    return validIds(data?.ids) && validIds(data?.expected_ids)
+      && data.ids.length === data.expected_ids.length;
+  }
+
+  async function prepareOperation(requestKey, {allowWhileUncertain = false, retryOnly = false} = {}) {
+    const key = await identityKey(requestKey);
+    if (key === requestKey) persistent = false;
     const prepare = () => {
       // Merge records from other tabs before deciding whether a new command is safe.
       if (persistent) {
@@ -64,20 +74,23 @@
       }
       const existing = identities.get(key);
       if (existing) return existing.id;
-      if (uncertainOperations.size && !allowWhileUncertain) {
+      if (retryOnly || (uncertainOperations.size && !allowWhileUncertain)) {
         throw new Error('Last save is not confirmed. Retry the same action before making another change.');
       }
       if (identities.size + observedIdentities.size >= maximumIdentities) throw new Error('Too many saves are waiting for confirmation. Retry a pending action first.');
-      let draw;
+      let draw, reorder;
       try {
         const [path, method, body] = JSON.parse(requestKey);
         if (path === '/api/draw' && method === 'POST') {
           const data = JSON.parse(body);
           if ((typeof data.prize_id === 'string' || typeof data.prize_id === 'number')
               && typeof data.round_name === 'string') draw = {prize_id:data.prize_id, round_name:data.round_name};
+        } else if (path === '/api/rewards/reorder' && method === 'POST') {
+          const data = JSON.parse(body);
+          if (validRewardOrder(data)) reorder = {ids:data.ids, expected_ids:data.expected_ids};
         }
       } catch (_) { /* Other requests need no retry details. */ }
-      const entry = {id:operationId(), created:Date.now(), ...(draw ? {draw} : {})};
+      const entry = {id:operationId(), created:Date.now(), ...(draw ? {draw} : {}), ...(reorder ? {reorder} : {})};
       identities.set(key, entry);
       if (persistent) {
         try {
@@ -96,36 +109,39 @@
     if (persistent) restoreIdentities();
     if (!global.crypto?.subtle || !global.TextEncoder) return requestKeys.findIndex(key => identities.has(key));
     for (let index = 0; index < requestKeys.length; index += 1) {
-      const digest = await global.crypto.subtle.digest('SHA-256', new global.TextEncoder().encode(requestKeys[index]));
-      const key = prefix + Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, '0')).join('');
-      if (identities.has(key)) return index;
+      if (identities.has(await identityKey(requestKeys[index]))) return index;
     }
     return -1;
   }
 
-  function pendingDraw() {
+  async function findPendingRewardOrder(csrf) {
     if (persistent) restoreIdentities();
-    for (const entry of identities.values()) if (entry.draw) return entry.draw;
+    for (const [key, {id, reorder}] of identities) {
+      if (!uncertainOperations.has(id) || !validRewardOrder(reorder)) continue;
+      const data = {ids:[...reorder.ids], expected_ids:[...reorder.expected_ids]};
+      const requestKey = JSON.stringify(['/api/rewards/reorder', 'POST', JSON.stringify(data), csrf]);
+      if (key === await identityKey(requestKey) && identities.get(key)?.id === id) return {id, data};
+    }
     return null;
   }
 
-  async function discardPending() {
-    const discard = () => {
-      if (persistent) {
-        const keys = [];
-        for (let index = 0; index < global.localStorage.length; index += 1) {
-          const key = global.localStorage.key(index);
-          if (key?.startsWith(prefix)) keys.push(key);
-        }
-        for (const key of keys) global.localStorage.removeItem(key);
+  async function findPendingDraw(prizeIds, round, csrf) {
+    if (persistent) restoreIdentities();
+    const candidates = [];
+    for (const prizeId of prizeIds) {
+      const rounds = new Set([undefined, round, '']);
+      for (const {draw} of identities.values()) {
+        if (draw && String(draw.prize_id) === String(prizeId)) rounds.add(draw.round_name);
       }
-      identities.clear();
-      observedIdentities.clear();
-      uncertainOperations.clear();
-      publish({...status, uncertain:false});
-    };
-    if (global.navigator?.locks?.request) return global.navigator.locks.request('eventdesk-request-identity', discard);
-    return discard();
+      for (const id of new Set([prizeId, String(prizeId), Number(prizeId)])) {
+        for (const name of rounds) {
+          candidates.push(name === undefined ? {prize_id:id} : {prize_id:id, round_name:name});
+        }
+      }
+    }
+    const index = await findPendingOperation(candidates.map(data =>
+      JSON.stringify(['/api/draw', 'POST', JSON.stringify(data), csrf])));
+    return candidates[index] ?? null;
   }
 
   function resolveOperation(id) {
@@ -173,6 +189,13 @@
   }
 
   function beginRequest() { return ++requestSequence; }
+
+  function notifyProjectorDraw(winner) {
+    if (!Number.isSafeInteger(winner?.winner_id)) return;
+    try {
+      global.localStorage.setItem('eventdesk-projector-draw', winner.winner_id + ':' + (winner.drawn_at || ''));
+    } catch (_) { /* Projectors also poll the server. */ }
+  }
 
   function publish(next) {
     if (next.storage === status.storage && next.sync === status.sync
@@ -260,6 +283,7 @@
     // Deletion in another tab cannot prove a local in-flight request has resolved.
     publish({...status, uncertain:uncertainOperations.size > 0});
   });
-  global.EventDeskStorage = Object.freeze({operationId, prepareOperation, findPendingOperation, pendingDraw, discardPending, completeOperation, beginRequest, markUncertain,
-    update, subscribe, confirmBackup, current:() => status});
+  global.EventDeskStorage = Object.freeze({operationId, prepareOperation, findPendingOperation, findPendingDraw, findPendingRewardOrder,
+    operationUncertain: id => uncertainOperations.has(id), completeOperation, beginRequest, markUncertain,
+    update, subscribe, confirmBackup, notifyProjectorDraw, current:() => status});
 })(window);

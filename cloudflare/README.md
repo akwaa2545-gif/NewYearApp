@@ -1,6 +1,6 @@
 # Cloudflare hosting
 
-Updated: 2026-11-17
+Updated: 2026-11-26
 
 This directory contains the hosted runtime and a deterministic asset bundler. Deployment requires resources in your own Cloudflare account. No account identifiers, credentials, Wrangler configuration, or GitHub deployment workflow are included.
 
@@ -8,16 +8,20 @@ This directory contains the hosted runtime and a deterministic asset bundler. De
 
 ```text
 Pages entry -> Python Worker -> ASSETS KV (static files)
+                           -> protected gateway -> private Windows API -> SQL Server
                            -> STATE Durable Object (coordinator, SQLite mirror/outbox)
                                -> protected gateway -> private Windows API -> SQL Server
 ```
 
 [pages-entry.mjs](pages-entry.mjs) forwards requests through the `EVENTDESK` service binding. [worker.py](worker.py) is the Python entry point and exports the `EventDesk` Durable Object class. The application uses the object instance named `main`; retain its namespace and identity across releases.
 
-In SQL mode, event business transactions use native SQL Server tables through the same authenticated PhotoPilot API used for photos. The original Cloudflare SQLite database is retained as a best-effort mirror and durable recovery queue. SQLOnlinePrimary keeps SQL operations available when SQLite access fails; backup maintenance runs only after SQL data changes, throttled to 60 seconds, with storage-failure probes paused for 300 seconds. Explicit SQLite mode keeps the original local handler path inside synchronous Durable Object transactions. The standalone `app.py` server remains separate.
+The public [TOKIN New Year Party 2027](https://tokinparty27.pages.dev/) Pages project uses [tokinparty27-pages.mjs](tokinparty27-pages.mjs) as its advanced-mode entry and binds `EVENTDESK` to the same Worker as [the canonical EventDesk entry](https://eventdesk.pages.dev/). The entry validates its public origin and forwards approved requests to the canonical origin through the service binding, preserving session, CSRF, and operation ID checks. Both addresses use the same SQL data and private tunnel. Hosted cookies are limited to the browser's current host, so sign in on the address you plan to use and keep an uncertain operation on its original address and session.
+
+In SQL mode, core requests use the authenticated PhotoPilot API directly from the Worker. The original Cloudflare SQLite database serves as a best-effort mirror and durable recovery queue. Under traffic, backup verification runs at most once per minute per isolate and pauses for five minutes after storage failures. Unchanged revisions skip mirror updates. Explicit SQLite mode keeps the original local handler path inside synchronous Durable Object transactions. The standalone `app.py` server remains separate.
 
 | Module | Responsibility |
 | --- | --- |
+| `direct_api.py` | Core SQL routes, optional backup scheduling, and signed check-in fallback |
 | `event_runtime.py` | Fixed authenticated event transport and atomic mirror/queue boundaries |
 | `sql_online.py` | Active quota-tolerant SQL routing, optional backup maintenance, and receipt-safe recovery. |
 | `event_primary.py` | SQL-first routing, revision synchronization, pending check-ins, receipt recovery |
@@ -33,7 +37,7 @@ In SQL mode, event business transactions use native SQL Server tables through th
 | `STATE` | Durable Object | SQLite-backed `EventDesk` coordinator; retain the existing namespace |
 | `ASSETS` | KV namespace | Content-addressed asset chunks from the build |
 | `APP_CONFIG` | Secret | Private setup configuration JSON, including signing secret and password hashes |
-| `PUBLIC_ORIGIN` | Plain text | Your canonical HTTPS origin |
+| `PUBLIC_ORIGIN` | Plain text | The Worker's canonical HTTPS origin. It remains `https://eventdesk.pages.dev` for the hosted event. |
 | `STATIC_MANIFEST` | Plain text | Contents of generated `static-manifest-binding.txt` |
 | `DEPLOYMENT_KEY` | Temporary secret | Random bootstrap key of at least 32 characters |
 | `PHOTO_PILOT` | Service | Protected gateway for photos and fixed event routes |
@@ -60,9 +64,9 @@ The ignored `data/cloudflare-deploy/` output contains:
 - `assets/`: public file chunks for the `ASSETS` KV namespace.
 - `static-manifest.json` and `static-manifest-binding.txt`: asset mappings and the compressed binding value.
 
-The vendor archive contains the hosting adapters, metadata-only `eventdesk_storage` table catalog, and pure-Python dependencies. Native SQL drivers and the SQL query compiler belong in the protected Windows backend package, not the Cloudflare archive. Private image/font files are not included in this public source; optional asset URLs may return 404 until supplied with permission.
+The vendor archive contains the hosting adapters, metadata-only `eventdesk_storage` table catalog, and pure-Python dependencies. Native SQL drivers and the SQL query compiler belong in the protected Windows backend package, not the Cloudflare archive. Private image and font files are omitted from public source. On the existing deployment, preserve the authorized FC Pride font entry and its verified KV chunks when merging a new static manifest. A fresh public build can use its system font fallback.
 
-Publish the listed modules using the Cloudflare API's Python Worker deployment support. Upload the listed chunks to your KV namespace and configure the bindings above. If using Pages for the public address, publish the advanced-mode Pages entry and bind `EVENTDESK` to your Worker. There is no one-command account deployment script in this repository; provision and review these resources with your own account tooling.
+Publish the listed modules using the Cloudflare API's Python Worker deployment support. Upload `vendor.zip` as `application/octet-stream`, stage and verify missing KV chunks, and keep the existing secret and service bindings. If using Pages for the public address, publish the designated entry as the advanced-mode `_worker.js` and bind `EVENTDESK` to your Worker. Follow the [release order](../DEPLOYMENT.md#release-a-tested-update) for changes that update both the Worker and the private API. Provision and review resources using your account tooling.
 
 Only upload the explicit module and asset outputs. Never publish the complete `data/` directory, which can contain private configuration and migration material.
 
@@ -82,7 +86,7 @@ When the API is unavailable, a verified mirror can serve saved reads and atomica
 
 Incoming requests drive recovery: resolve receipts/cancellation tombstones, replay queued check-ins in order with their original timestamps, and apply SQL revisions. There is no background timer, and recovery never overwrites SQL with an old SQLite file. Review rejected entries and seven-day queued-session expiry before changing modes or restoring data.
 
-The fallback requires Cloudflare reachability, a verified mirror, and quota. If a durable intent cannot be saved, unsafe mutations halt even if SQL is available. This source adds no paid-plan upgrade, Container, or R2 requirement. Rehearse expected load and monitor Free-plan usage rather than assuming unlimited fallback capacity.
+The fallback requires Cloudflare reachability, a verified mirror, and available quota. If a durable intent cannot be saved, fallback check-ins cannot commit. Healthy direct SQL operations can continue when Durable Object quota is exhausted. The deployment uses Workers Free and remains subject to its request and CPU limits. Rehearse expected load before the event.
 
 ## Shared photo and event gateway
 

@@ -14,6 +14,7 @@ from .replica import intent_hash
 POST_PATHS = frozenset('/api/' + name for name in (
     'staff-session', 'login', 'logout', 'lookup', 'scan/checkin', 'draw',
     'projector/state', 'winners/reroll', 'checkin/wristband-lost', 'scan/verify',
+    'rewards/reorder', 'winners/remove', 'winners/history/clear',
 ))
 IMAGE_PATHS = frozenset(('/api/rewards/image', '/api/projector/prize-image'))
 FALLBACK_POSTS = frozenset(('/api/staff-session', '/api/login', '/api/lookup', '/api/scan/checkin'))

@@ -111,7 +111,7 @@ SQLOnlinePrimary keeps ordinary SQL requests independent of SQLite access. SQL c
 
 The fallback still requires Cloudflare reachability, a ready last-good copy, and available storage quota. If the API and SQLite storage are both unavailable, new offline check-ins cannot be saved. The saved copy can lag by roughly a minute during normal traffic, or longer during quota/API failures. Keep the existing free resources and monitor the separate Worker, Durable Object, KV, and storage limits.
 
-Before mutations, supported browsers retain only a SHA-256 request identity key and UUID metadata. Retries reuse the identity; unrelated SQL reads cannot clear an uncertain save. An exact authoritative operation receipt resolves it. Unavailable browser storage limits this protection to memory until reload. Never clear an unresolved operation merely to enable a new draw.
+Before mutations, supported browsers retain the operation identity and limited details needed for an exact retry. An unrelated SQL read cannot clear an uncertain save. Use the same address and signed-in session for retries. See [browser retry details](cloudflare/SQL_FAILOVER.md#api-contract-and-limits).
 
 ## Employee photos
 
@@ -156,3 +156,13 @@ Set up the gateway bindings described in [cloudflare/README.md](cloudflare/READM
 ## Updates and backups
 
 Back up SQL, the hosted mirror/queue, and signing configuration before migrations. For a local SQLite database, use its online backup API or stop writes before copying the database and any WAL sidecars. Retain the same hosted object namespace and instance when updating code. Replacing a source checkout is not a data migration. Run the checks in [README.md](README.md) before release, then rehearse sign-in, check-in, repeat scans, photo access, outage acceptance, and recovery in an isolated target.
+
+### Release a tested update
+
+1. Build the [Cloudflare bundle](cloudflare/README.md#build-and-publish) from the same reviewed revision as the private API package. Record SHA-256 hashes for the Worker modules, changed assets, and native source files. Keep verified rollback copies of the live Worker modules, static manifest, and native files.
+2. Merge the new static manifest with any existing authorized deployment-only assets. Upload missing chunks to the existing KV namespace and verify their lengths and hashes before activating the manifest.
+3. When a release changes native handlers or the request protocol, stage the matching `app.py` and `photo_api/event_protocol.py` on the private host. Apply them with the existing service procedure, preserve file permissions, restart the event backend, and verify SQL health before enabling new routes at the edge.
+4. Publish the Worker modules and merged `STATIC_MANIFEST`. Preserve the current secret and service bindings, Durable Object namespace, and canonical `PUBLIC_ORIGIN`. Both Pages entries share this Worker, so the code update reaches both addresses.
+5. Check the public page and projector, verify changed asset hashes, and confirm SQL sign-in and projector state. For a live reorder smoke test, use an order that fails validation without writing. Repeat it with the same operation ID and verify the matching SQL receipt. Test successful reorder and lost-response recovery in an isolated database.
+
+If a release fails validation, restore the previous Worker modules and asset manifest first. Then restore any changed native files and verify the public routes again. Keep the prior KV chunks available for rollback.

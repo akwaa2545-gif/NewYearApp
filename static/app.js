@@ -6,6 +6,7 @@ let appActivity = null, appPollTimer = null, appRefreshInFlight = false;
 let projectorPollTimer = null, projectorRefreshInFlight = false;
 let staffProjectorState = null;
 let staffPrizeSelectionPending = false;
+let pendingRewardOrder = null;
 let rewardData = {drafts:[], prizes:[]};
 let winnerData = [];
 let projectorPopup = null, projectorPopupTimer = null;
@@ -54,11 +55,12 @@ function updateDrawAvailability() {
   const button = $('spinButton');
   const status = window.EventDeskStorage?.current();
   const phase = staffProjectorState?.phase;
-  const busy = staffPrizeSelectionPending || state.drawing || state.winnerHistorySaving || state.rewardReordering || state.prizeImageUploading || status?.offline === true
-    || Boolean(phase && ['preparing','spinning','winner_selected'].includes(phase));
+  const saving = staffPrizeSelectionPending || state.drawing || state.winnerHistorySaving
+    || state.rewardReordering || state.prizeImageUploading || status?.offline === true;
+  const busy = saving || ['preparing','spinning','winner_selected'].includes(phase);
   const selectedPrize = rewardData.prizes.find(item => String(item.id) === String(state.selectedPrizeId));
   if (button) {
-    button.disabled = busy || !selectedPrize;
+    button.disabled = saving || (!status?.uncertain && (busy || !selectedPrize));
     button.textContent = status?.uncertain ? 'Retry same draw' : selectedPrize?.drawn > 0 ? 'Draw again' : 'Draw';
   }
   document.querySelectorAll('.reward-select-button').forEach(selectButton => {
@@ -76,6 +78,7 @@ function updateDrawAvailability() {
   $('selectedPrizeDelete').disabled = !selectedPrize || state.drawing || state.winnerHistorySaving || state.rewardReordering;
   $('selectedPrizeDelete').title = pending ? 'Remove or publish the existing draft first.'
     : selectedPrize?.drawn ? 'Prizes with winners cannot be deleted.' : '';
+  updateRewardOrderRetry();
 }
 
 function renderStorageStatus(status) {
@@ -105,15 +108,20 @@ async function api(path, options={}) {
   const csrf = state.csrf;
   const requestKey = JSON.stringify([path, method, body, csrf]);
   const mutation = method === 'POST' && !['/api/lookup','/api/login','/api/logout','/api/staff-session'].includes(path);
+  const rewardReorder = mutation && path === '/api/rewards/reorder';
   const rewardMutation = mutation && ['/api/rewards/draft','/api/rewards/draft/delete',
-    '/api/rewards/publish','/api/rewards/reorder'].includes(path);
+    '/api/rewards/publish'].includes(path);
   const prizeSelectionMutation = mutation && path === '/api/projector/state' && options.data?.phase === 'ready_for_next';
   const allowWhileUncertain = rewardMutation || prizeSelectionMutation;
   const operationId = method === 'POST' ? mutation && window.EventDeskStorage?.prepareOperation
-    ? await window.EventDeskStorage.prepareOperation(requestKey, {allowWhileUncertain})
+    ? await window.EventDeskStorage.prepareOperation(requestKey, {allowWhileUncertain, retryOnly:options.retryOnly})
     : window.EventDeskStorage?.operationId() : null;
+  if (options.retryId && operationId !== options.retryId) {
+    throw new Error('This retry requires the original request and signed-in session.');
+  }
   const observation = window.EventDeskStorage?.beginRequest();
-  const wasUncertain = window.EventDeskStorage?.current().uncertain;
+  const wasUncertain = window.EventDeskStorage?.operationUncertain?.(operationId)
+    ?? window.EventDeskStorage?.current().uncertain;
   const uncertain = () => {
     if (!mutation || !operationId) return;
     window.EventDeskStorage?.markUncertain(operationId, observation);
@@ -145,6 +153,9 @@ async function api(path, options={}) {
   try {
     if (mutation && response.ok && !type.includes('json')) throw new Error('Invalid reply');
     payload = type.includes('json') ? await response.json() : await response.text();
+    if (rewardReorder && response.ok && JSON.stringify(payload?.ids) !== JSON.stringify(options.data?.ids)) {
+      throw new Error('Invalid reward order reply');
+    }
   } catch (_) {
     uncertain();
     throw new Error('Cannot read the server reply. Retry the same action.');
@@ -156,7 +167,7 @@ async function api(path, options={}) {
   }
   if (mutation && response.status >= 500) uncertain();
   const resolvedOperation = mutation && (response.ok || receipt === operationId
-    || response.status < 500 && (!wasUncertain || allowWhileUncertain)) ? operationId : null;
+    || response.status < 500 && !wasUncertain) ? operationId : null;
   if (resolvedOperation) await window.EventDeskStorage?.completeOperation?.(resolvedOperation);
   window.EventDeskStorage?.update(response.headers, payload, observation);
   if (!response.ok) {
@@ -263,6 +274,7 @@ function goView(name) {
   if (name === 'attendance') loadAttendance();
   if (name === 'admin') refreshAdmin().catch(() => {});
   if (name === 'draw') {
+    refreshRewardOrderRetry().catch(() => {});
     loadPrizeList().catch(error => { $('drawMessage').textContent = error.message; });
     loadProjectorState().catch(() => {});
     loadWinnerHistory().catch(() => {});
@@ -883,6 +895,32 @@ async function loadRewards() {
   $('rewardSetupSummary').textContent = rewardData.drafts.length ? `${rewardData.drafts.length} pending` : '';
   $('rewardPublish').disabled = !rewardData.drafts.length;
 }
+
+function updateRewardOrderRetry() {
+  const button = $('retryRewardOrder');
+  if (!button) return;
+  if (!pendingRewardOrder && document.activeElement === button) $('rewardTitle').focus();
+  button.hidden = !pendingRewardOrder;
+  const busy = state.rewardReordering || state.drawing || window.EventDeskStorage?.current().offline === true;
+  button.setAttribute('aria-disabled', String(busy));
+}
+
+async function refreshRewardOrderRetry() {
+  const csrf = state.csrf;
+  const pending = await window.EventDeskStorage?.findPendingRewardOrder?.(csrf);
+  if (csrf !== state.csrf) return;
+  pendingRewardOrder = pending;
+  const message = $('rewardOrderStatus');
+  if (pending && !message.textContent) message.textContent = 'Prize order not confirmed. Retry to check it.';
+  updateRewardOrderRetry();
+}
+
+async function retryRewardOrder() {
+  if (!pendingRewardOrder) return;
+  const {id, data} = pendingRewardOrder;
+  await saveRewardOrder(data, {retryId:id});
+}
+
 function clearRewardDrag() {
   state.rewardDragId = null;
   $('rewardPublishedList').querySelectorAll('.is-dragging,.drop-before,.drop-after').forEach(card => {
@@ -928,21 +966,39 @@ async function dropReward(event) {
   const expectedIds = previous.map(item => item.id);
   const ids = ordered.map(item => item.id);
   if (ids.every((id, index) => id === expectedIds[index])) return;
+  await saveRewardOrder({ids, expected_ids:expectedIds}, {ordered});
+}
+
+async function saveRewardOrder(data, {ordered, retryId} = {}) {
+  if (state.rewardReordering || state.drawing || window.EventDeskStorage?.current().offline) return;
+  const message = $('rewardOrderStatus');
+  const previous = rewardData.prizes;
   state.rewardReordering = true;
-  rewardData.prizes = ordered;
-  renderPublishedRewards();
+  updateDrawAvailability();
+  message.className = 'form-message';
+  message.textContent = 'Saving prize order…';
+  if (ordered) {
+    rewardData.prizes = ordered;
+    renderPublishedRewards();
+  }
   try {
-    await api('/api/rewards/reorder', {method:'POST', data:{ids, expected_ids:expectedIds}});
+    await api('/api/rewards/reorder', {method:'POST', data, retryOnly:Boolean(retryId), retryId});
+    message.className = 'form-message success';
+    message.textContent = 'Prize order saved.';
     await loadProjectorState().catch(() => {});
     await loadRewards().catch(() => {});
-    toast('Prize order saved.', 'success');
   } catch (error) {
-    rewardData.prizes = previous;
-    renderPublishedRewards();
-    await loadRewards().catch(() => {});
-    toast(error.message, 'error');
+    if (ordered && rewardData.prizes === ordered) {
+      rewardData.prizes = previous;
+      renderPublishedRewards();
+    }
+    message.className = 'form-message error';
+    message.textContent = error.message;
+    await refreshRewardOrderRetry();
+    if (!pendingRewardOrder) await loadRewards().catch(() => {});
   } finally {
     state.rewardReordering = false;
+    await refreshRewardOrderRetry();
     updateDrawAvailability();
   }
 }
@@ -1549,59 +1605,50 @@ function createWorkspace(hostId, mode) {
 async function drawWinner(event) {
   event.preventDefault();
   if (state.drawing) return;
-  if (window.EventDeskStorage?.current().offline) return toast('Draws are unavailable offline.', 'error');
+  const storage = window.EventDeskStorage;
+  const uncertain = storage?.current().uncertain;
+  if (storage?.current().offline) return toast('Draws are unavailable offline.', 'error');
   if (state.prizeImageUploading) return toast('Wait for the upload.', 'error');
   if (staffProjectorState && ['preparing','spinning','winner_selected'].includes(staffProjectorState.phase)
-      && !window.EventDeskStorage?.current().uncertain) return;
+      && !uncertain) return;
   const selected = rewardData.prizes.find(item => String(item.id) === String(state.selectedPrizeId));
-  if (!selected) return;
-  let prizeId = selected.id;
-  let prize = selected.name;
+  if (!selected && !uncertain) return;
+  let prize = selected?.name;
   let round = $('roundInput').value.trim();
-  if (!prize) return;
+  let data = {prize_id:selected?.id, round_name:round};
+  let retryOnly = false;
   state.drawing = true; updateDrawAvailability();
   $('drawMessage').textContent = 'Selecting a winner securely…';
   try {
-    if (window.EventDeskStorage?.current().uncertain) {
-      // Recover the original body if staff changed prize or round after an unconfirmed draw.
-      const candidates = [];
-      const savedDraw = window.EventDeskStorage.pendingDraw();
-      for (const item of rewardData.prizes) {
-        for (const id of [item.id, String(item.id)]) {
-          for (const roundName of new Set([savedDraw?.round_name, round, ''])) {
-            if (roundName === undefined) continue;
-            const data = {prize_id:id, round_name:roundName};
-            candidates.push({item, data, key:JSON.stringify(['/api/draw', 'POST', JSON.stringify(data), state.csrf])});
-          }
-        }
-      }
-      const pendingIndex = await window.EventDeskStorage.findPendingOperation(candidates.map(item => item.key));
-      if (pendingIndex >= 0) {
-        const pending = candidates[pendingIndex];
-        prizeId = pending.data.prize_id;
-        prize = pending.item.name;
-        round = pending.data.round_name;
-        if (String(state.selectedPrizeId) !== String(prizeId)) {
-          state.selectedPrizeId = pending.item.id;
+    if (uncertain) {
+      const pending = await storage.findPendingDraw(rewardData.prizes.map(item => item.id), round, state.csrf);
+      if (pending) {
+        const item = rewardData.prizes.find(item => String(item.id) === String(pending.prize_id));
+        data = pending;
+        retryOnly = true;
+        prize = item.name;
+        round = pending.round_name ?? '';
+        if (String(state.selectedPrizeId) !== String(item.id)) {
+          state.selectedPrizeId = item.id;
           renderSelectedPrize();
         }
         $('roundInput').value = round;
-      }
-      // Validate the exact saved request before any projector update or other write.
-      const key = JSON.stringify(['/api/draw', 'POST', JSON.stringify({prize_id:prizeId, round_name:round}), state.csrf]);
-      try { await window.EventDeskStorage.prepareOperation(key); }
-      catch (error) {
-        const preparingKey = JSON.stringify(['/api/projector/state', 'POST', JSON.stringify({phase:'preparing', prize, round_name:round}), state.csrf]);
-        await window.EventDeskStorage.prepareOperation(preparingKey);
-        await setProjectorPhase('preparing', {prize, round_name:round}, false);
+      } else {
+        const body = JSON.stringify({phase:'preparing', prize, round_name:round});
+        const key = JSON.stringify(['/api/projector/state', 'POST', body, state.csrf]);
+        if (!prize || await storage.findPendingOperation([key]) < 0) {
+          throw new Error('Last save is not confirmed. Retry the original action in the same signed-in session.');
+        }
+        await setProjectorPhase('preparing', {prize, round_name:round}, false, true);
       }
     } else await setProjectorPhase('preparing', {prize, round_name:round}, false);
-    const payload = await api('/api/draw', {method:'POST', data:{prize_id:prizeId, round_name:round}});
+    const payload = await api('/api/draw', {method:'POST', data, retryOnly});
     const winner = payload.winner;
+    storage?.notifyProjectorDraw?.(winner);
     $('drawMessage').textContent = 'Winner saved. Revealing employee ID…';
     const revealWinner = () => {
       if (!winnerData.some(item => item.winner_id === winner.winner_id)) {
-        winnerData.unshift({winner_id:winner.winner_id, prize_id:prizeId, employee_id:winner.employee_id,
+        winnerData.unshift({winner_id:winner.winner_id, prize_id:data.prize_id, employee_id:winner.employee_id,
           name:winner.name, department:winner.department, status:'active'});
       }
       renderSelectedPrizeWinners();
@@ -1615,29 +1662,12 @@ async function drawWinner(event) {
     };
     setTimeout(revealWinner, 7200);
   } catch (error) {
-    const unmatchedSave = error.message === 'Last save is not confirmed. Retry the same action before making another change.';
-    $('drawMessage').textContent = unmatchedSave
-      ? 'An older save cannot be matched to this draw. Review the winners, then clear the old pending save to continue.'
-      : error.message;
+    $('drawMessage').textContent = error.message;
     $('drawMessage').className = 'form-message error';
-    $('clearOldPending').hidden = !unmatchedSave;
     state.drawing = false; updateDrawAvailability();
     if (error.code !== 'draw_in_progress' && !window.EventDeskStorage?.current().uncertain) {
       setProjectorPhase('ready_for_next', {prize, round_name:round}, false).catch(() => {});
     }
-  }
-}
-
-async function clearOldPendingSave() {
-  try {
-    await window.EventDeskStorage.discardPending();
-    $('clearOldPending').hidden = true;
-    $('drawMessage').className = 'form-message success';
-    $('drawMessage').textContent = 'Old pending save cleared. Check the selected prize, then draw.';
-    await Promise.all([loadWinnerHistory(), loadPrizeList(), refreshStats()]);
-  } catch (error) {
-    $('drawMessage').className = 'form-message error';
-    $('drawMessage').textContent = error.message;
   }
 }
 
@@ -1747,7 +1777,7 @@ async function loadProjectorState() {
 
 function connectProjectorState() {
   if (!appBackgroundAllowed() || state.view !== 'draw' || !state.profile) return;
-  if (projectorPollTimer === null) projectorPollTimer = setInterval(refreshDrawProjector, 3000);
+  if (projectorPollTimer === null) projectorPollTimer = setInterval(refreshDrawProjector, 15000);
 }
 
 function stopProjectorPolling() {
@@ -1763,9 +1793,9 @@ async function refreshDrawProjector() {
   finally { projectorRefreshInFlight = false; }
 }
 
-async function setProjectorPhase(phase, details={}, notify=true) {
-  const payload = await api('/api/projector/state', {method:'POST', data:{phase, ...details}});
-  if (phase === 'ready_for_next' && Number.isSafeInteger(payload.sequence)) {
+async function setProjectorPhase(phase, details={}, notify=true, retryOnly=false) {
+  const payload = await api('/api/projector/state', {method:'POST', data:{phase, ...details}, retryOnly});
+  if (['ready_for_next', 'preparing'].includes(phase) && Number.isSafeInteger(payload.sequence)) {
     try { window.localStorage.setItem('eventdesk-projector-selection', String(payload.sequence)); }
     catch (_) { /* Projectors also poll the server. */ }
   }
@@ -1933,12 +1963,12 @@ async function initialize() {
   $('adminDrawForm').addEventListener('submit', removeAdminDrawHistory);
   updateAttendanceScope();
   $('drawForm').addEventListener('submit', drawWinner);
-  $('clearOldPending').addEventListener('click', clearOldPendingSave);
   $('rewardForm').addEventListener('submit', addRewardDraft);
   $('rewardPublishedList').addEventListener('dragstart', startRewardDrag);
   $('rewardPublishedList').addEventListener('dragover', moveRewardDrag);
   $('rewardPublishedList').addEventListener('drop', dropReward);
   $('rewardPublishedList').addEventListener('dragend', clearRewardDrag);
+  $('retryRewardOrder').addEventListener('click', retryRewardOrder);
   $('rewardCancel').addEventListener('click', resetRewardForm);
   $('rewardDialogClose').addEventListener('click', () => $('rewardSetup').close());
   $('rewardPublish').addEventListener('click', publishRewards);

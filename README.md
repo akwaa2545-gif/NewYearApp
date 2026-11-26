@@ -1,16 +1,18 @@
 # EventDesk / NewYearApp
 
-Updated: 2026-11-17
+Updated: 2026-11-26
+
+The live staff header shows the configured event title. [TOKIN New Year Party 2027](https://tokinparty27.pages.dev/)
 
 An event check-in app with QR scanning, employee lookup, attendance, prize draws, and a projector view. It runs locally with Python and SQLite. The hosted runtime supports SQL Server as the primary event database through a private Windows API, retaining Cloudflare SQLite as a best-effort outage copy. Online SQL operations continue when that backup reaches its storage quota. Employee photos use the same protected gateway.
 
 During a SQL API outage, a verified Cloudflare copy can serve saved data and queue check-ins. The UI shows **Saved offline** until SQL accepts them. Prize draws and other conflicting changes pause. This requires working access to Cloudflare and available quota; it is not browser-only offline storage. See [the SQL failover guide](cloudflare/SQL_FAILOVER.md).
 
-Backup maintenance runs only after SQL data changes, at most once per 60 seconds under traffic; storage failures pause backup probes for 300 seconds. The saved copy can lag or become unavailable. If the API and SQLite quota are both unavailable, new offline check-ins cannot be saved. Other Workers Free limits still apply.
+Under traffic, the Worker schedules backup verification at most once per minute per isolate. Unchanged revisions skip mirror updates. Storage failures pause backup probes for five minutes. If the API and SQLite quota are both unavailable, new offline check-ins cannot be saved. Other Workers Free limits still apply.
 
 The scanner uses html5-qrcode and jsQR. Employee details appear in a popup; successful check-in shows a green animation. Employees who already checked in have an information-only popup. The interface supports reduced motion.
 
-Staff pages pause automatic requests when hidden, unfocused, or inactive for two minutes. A visible projector checks for prize and draw updates every three seconds, including while staff use another window. Hiding the projector pauses these checks. Showing it again fetches the latest state immediately.
+Staff pages pause automatic requests when hidden, unfocused, or inactive for two minutes. A visible projector polls every 15 seconds while waiting and every three seconds while a prize is ready or a draw is in progress. Failed polls back off to 30 seconds, then 60 seconds. Confirmed selections and draws refresh visible projector windows in the same browser immediately. Hiding the projector pauses polling.
 
 ## Run locally
 
@@ -41,6 +43,7 @@ To rehearse the seven-digit reels, add a synthetic employee with a numeric ID su
 - Administrators manage employees, attendance, wristband status, and prizes.
 - The projector view is available at `/projector`.
 - On the staff **Draw** page, choose **Open projector**. A gold question mark appears on the stage until you select a published prize from **Rewards**. Select a prize and click **Draw** to start the reels. Use **Next prize** to move on or **Clear selection** to restore the question mark.
+- If a reorder response is lost, choose **Retry prize order** under **Rewards** in the same signed-in browser session. The app resends the saved order with its original request ID.
 - During a draw, seven employee ID boxes stop one by one from left to right. The server selects and saves the winner before the visual reveal. Keep **Show employee ID** enabled in screen settings to display the number on the projector.
 - Open **Projector audio** on the staff draw page to adjust music and effects independently for projector windows in the same browser. If playback is blocked, click **Enable sound** on the projector. Press **M** on the projector to mute or unmute. The app preloads its original, royalty-free audio files from the same server as the projector.
 - Camera streaming requires HTTPS or localhost. On LAN HTTP, use the photo picker, handheld scanner, or manual entry. Focus, zoom, and torch controls depend on the browser and camera.
@@ -63,7 +66,7 @@ The repository excludes employee files, photos, databases, private configuration
 
 ## Deployment and photos
 
-See [DEPLOYMENT.md](DEPLOYMENT.md) for HTTPS, Docker, SQL backend installation, migration, and photos. See [cloudflare/README.md](cloudflare/README.md) for the hosted architecture and bundle format. The new Worker defaults to `EVENT_STORAGE=sql`; explicitly use `sqlite` while preparing a fresh deployment that has no SQL backend. These settings do not change the standalone local SQLite server.
+See [DEPLOYMENT.md](DEPLOYMENT.md) for HTTPS, Docker, SQL backend installation, migration, photos, and [releasing an update](DEPLOYMENT.md#release-a-tested-update). See [cloudflare/README.md](cloudflare/README.md) for the hosted architecture and bundle format. The Worker defaults to `EVENT_STORAGE=sql`. Explicitly use `sqlite` while preparing a fresh deployment that has no SQL backend. These settings do not change the standalone local SQLite server.
 
 Publishing to GitHub does not deploy the app; no automatic deployment workflow is configured. Private event images and the original font are omitted from this repository. Optional image requests may return 404 until you add your own permitted assets; employee photos use a placeholder when unavailable.
 

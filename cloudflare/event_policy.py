@@ -14,11 +14,10 @@ CHECKIN = frozenset(('/api/scan/checkin', '/api/checkin/wristband-lost'))
 VERIFY = frozenset(('/api/scan/verify',))
 DRAW = frozenset('/api/' + path for path in (
     'draw/participants', 'rewards/draft', 'rewards/draft/delete', 'rewards/publish', 'rewards/reorder',
-    'draw', 'projector/state', 'projector/prize-image', 'winners/reroll',
-    'winners/remove', 'winners/history/clear'))
+    'draw', 'projector/state', 'projector/prize-image', 'winners/reroll', 'winners/remove'))
 ADMIN = frozenset('/api/' + path for path in (
     'wristbands/generate', 'wristbands/action', 'prizes', 'settings', 'users', 'users/update',
-    'admin/employees', 'admin/attendance/remove', 'admin/draw-history/remove',
+    'admin/employees', 'admin/attendance/remove', 'admin/draw-history/remove', 'winners/history/clear',
     'import/inspect', 'import/preview', 'import/commit', 'import'))
 AUTHENTICATED = frozenset(('/api/logout', '/api/lookup'))
 

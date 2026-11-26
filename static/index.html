@@ -39,8 +39,11 @@
 
   <div id="appView" class="app-shell">
     <header class="app-header">
-      <button class="brand brand-button brand-company" type="button" data-view="home" aria-label="EventDesk home"><img src="/static/assets/tokin-logo.png" alt="YAGEO Tokin"><span class="brand-product">EventDesk</span></button>
-      <div class="header-center"><span class="live-dot"></span><span id="eventName">EventDesk</span></div>
+      <button class="brand brand-button brand-company" type="button" data-view="home" aria-labelledby="eventName eventHomeLabel">
+        <img src="/static/assets/tokin-logo.png" alt="">
+        <span id="eventName" class="brand-product">TOKIN New Year Party 2027</span>
+        <span id="eventHomeLabel" hidden>Home</span>
+      </button>
       <div class="header-actions"><span id="networkState" class="network">Online</span><span id="staffName" class="staff-name">Event Staff</span><button id="adminLoginButton" class="icon-button" type="button" hidden="">Admin</button><button id="headerBackButton" class="icon-button" type="button" data-view="home">Home</button><button id="logoutButton" class="icon-button" type="button" title="Leave admin" aria-label="Leave admin" hidden="">Leave admin</button></div>
     </header>
     <p id="storageStatus" class="storage-status" role="status" aria-live="polite" aria-atomic="true" hidden></p>
@@ -138,7 +141,7 @@
       <section id="view-draw" class="view draw-view">
         <div class="view-heading"><button class="back-button" type="button" data-view="home">Home</button><div><p><span id="drawEligibleSummary">-</span> can win · <span id="drawParticipantCount">-</span> employees</p></div><span class="mode-badge amber"><span id="drawEligible">-</span> can win</span></div>
         <div class="draw-grid staff-draw-grid">
-          <div class="panel draw-controls selected-prize-panel"><form id="drawForm"><select id="prizeSelect" aria-label="Selected prize" hidden=""><option value="">Select a reward</option></select><div id="selectedPrize" class="selected-prize" aria-live="polite"><img id="selectedPrizeImage" alt="" hidden=""><strong id="selectedPrizeName">Select a prize below</strong><span id="selectedPrizeProgress"></span></div><div class="selected-prize-actions"><button id="selectedPrizeAdd" type="button">+ Add prize</button><button id="selectedPrizeEdit" type="button" disabled="">Edit</button><button id="selectedPrizeDelete" type="button" disabled="">Delete</button><button id="selectedPrizeClear" type="button" hidden>Clear selection</button></div><p id="drawMessage" class="form-message" role="status"></p><button id="clearOldPending" type="button" class="button secondary" hidden>Clear old pending save</button><div hidden><label for="roundInput">Round <span>optional</span></label><input id="roundInput" maxlength="100" placeholder="Round name"><label for="prizeImageInput">Prize picture <span>optional</span></label><div class="prize-image-picker"><input id="prizeImageInput" type="file" accept="image/png,image/jpeg,image/webp"><div id="prizeImagePreview" class="prize-image-preview" hidden=""><img id="prizeImagePreviewImg" alt="Selected prize"><div><strong id="prizeImageName">Prize picture</strong><button id="removePrizeImage" type="button">Remove picture</button></div></div></div><p id="prizeImageMessage" class="form-message" role="status"></p></div></form></div>
+          <div class="panel draw-controls selected-prize-panel"><form id="drawForm"><select id="prizeSelect" aria-label="Selected prize" hidden=""><option value="">Select a reward</option></select><div id="selectedPrize" class="selected-prize" aria-live="polite"><img id="selectedPrizeImage" alt="" hidden=""><strong id="selectedPrizeName">Select a prize below</strong><span id="selectedPrizeProgress"></span></div><div class="selected-prize-actions"><button id="selectedPrizeAdd" type="button">+ Add prize</button><button id="selectedPrizeEdit" type="button" disabled="">Edit</button><button id="selectedPrizeDelete" type="button" disabled="">Delete</button><button id="selectedPrizeClear" type="button" hidden>Clear selection</button></div><p id="drawMessage" class="form-message" role="status"></p><div hidden><label for="roundInput">Round <span>optional</span></label><input id="roundInput" maxlength="100" placeholder="Round name"><label for="prizeImageInput">Prize picture <span>optional</span></label><div class="prize-image-picker"><input id="prizeImageInput" type="file" accept="image/png,image/jpeg,image/webp"><div id="prizeImagePreview" class="prize-image-preview" hidden=""><img id="prizeImagePreviewImg" alt="Selected prize"><div><strong id="prizeImageName">Prize picture</strong><button id="removePrizeImage" type="button">Remove picture</button></div></div></div><p id="prizeImageMessage" class="form-message" role="status"></p></div></form></div>
         </div>
         <div class="panel draw-action-bar" role="toolbar" aria-label="Prize draw actions"><button id="openProjector" class="button dark" type="button">Open projector</button><button id="spinButton" class="button primary" type="submit" form="drawForm" disabled="">Draw</button><button id="readyNextDraw" class="button secondary" type="button">Next prize</button><button id="refreshDraw" class="button secondary" type="button">Refresh</button></div>
         <details id="winnerReveal" class="panel staff-winner" open hidden>
@@ -153,8 +156,10 @@
           </div>
         </details>
         <section class="panel reward-editor" aria-labelledby="rewardTitle">
-          <div class="reward-list-heading"><h2 id="rewardTitle">Rewards</h2><span id="rewardCount"></span></div>
+          <div class="reward-list-heading"><h2 id="rewardTitle" tabindex="-1">Rewards</h2><span id="rewardCount"></span></div>
           <div id="rewardPublishedList"></div>
+          <p id="rewardOrderStatus" class="form-message" role="status"></p>
+          <button id="retryRewardOrder" class="button secondary" type="button" aria-describedby="rewardOrderStatus" hidden>Retry prize order</button>
           <dialog id="rewardSetup" class="reward-dialog" aria-labelledby="rewardDialogTitle"><div class="reward-dialog-heading"><h2 id="rewardDialogTitle">Prize setup</h2><span id="rewardSetupSummary"></span><button id="rewardDialogClose" type="button" aria-label="Close prize setup">×</button></div><div class="reward-setup-body">
           <form id="rewardForm" class="reward-form">
             <input id="rewardDraftId" type="hidden"><input id="rewardSourceId" type="hidden">
